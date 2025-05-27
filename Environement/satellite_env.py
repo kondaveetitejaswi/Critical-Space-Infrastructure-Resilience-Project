@@ -91,4 +91,24 @@ class SatelliteDefenseEnv(AECEnv):
         self.rewards = {agent: 0.0 for agent in self.agents}
         self.dones = {agent: False for agent in self.agents}
         self.infos = {agent: {} for agent in self.agents}
+
+
+
+        def observe(self, agent):
+            return {k: self.state[k] for k in self.observation_spaces[agent].spaces.keys()}
         
+        def step(self, action):
+            agent = self.agent_selection
+
+            if self.dones[agent]:
+                self._was_done_step(action)
+                return
+            
+            if "attacker" in agent:
+                self._attacker_action(action)
+            else:
+                self._defender_action(action)
+
+# have to work on the step function, attacket action, defender action,
+# and the radiation decay function, getting reward, update status and the render function            
+
