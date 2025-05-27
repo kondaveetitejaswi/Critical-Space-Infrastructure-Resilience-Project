@@ -77,14 +77,18 @@ class SatelliteDefenseEnv(AECEnv):
             "under_attack": 0.0,
 
             "DoS_attack": 0.0,
-            "Memory_corruption": 
-            "Spoof_control":
-            "Inject_bug":
-            "Radiation_surge":
+            "Memory_corruption": 0.0,
+            "Spoof_control": 0.0,
+            "Inject_bug": 0.0,
+            "Radiation_surge": 0.0,
 
-            "Boost_power":
-            "Repair_memory":
-            "Stabilize_control":
-            "Reset_attack_flag":
+            "Boost_power": 1.0,
+            "Repair_memory": 1.0,
+            "Stabilize_control": 1.0,
+            "Reset_attack_flag": 1.0
         }
 
+        self.rewards = {agent: 0.0 for agent in self.agents}
+        self.dones = {agent: False for agent in self.agents}
+        self.infos = {agent: {} for agent in self.agents}
+        
