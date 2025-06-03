@@ -30,38 +30,37 @@ class SatelliteDefenseEnv(AECEnv):
         # continuous observations: system health levels and radiation levels
         self.observation_spaces = {
             agent: Dict({
-                "power": Box(low=0.0, high=1.0, shape=()), #for power level
-                "memory": Box(low=0.0, high=1.0, shape=()), #memory health
+                "power": Box(low=0.0, high=1.0, shape=()), #normalized battery status
+                "memory": Box(low=0.0, high=1.0, shape=()), #memory integrity
                 "control": Box(low=0.0, high=1.0, shape=()), #control system stability
-                "software_health": Box(low=0.0, high=1.0, shape=()), #software itnegrity
-                "raditaion_level": Box(low=0.0, high=1.0, shape=()), #radiation exposure
-                "under_attack": Box(low=0.0, high=1.0, shape=()),    #general attack status
+                "software_health": Box(low=0.0, high=1.0, shape=()), #system integrity post-attacks
+                
+                "raditaion_level": Box(low=0.0, high=100.0, shape=()), #cosmic radiation exposure
+                
+                "under_attack": Box(low=0.0, high=1.0, shape=()),    #0: no attack, 1:under attack
 
-                # attack states (each attack type gets a variable)
+                "signal_strength": Box(low = -120.0, high = -50.0, shape=()), #satellite signal reception
 
-                "DoS_attack": Box(low=0.0, high=1.0, shape=()), #Denial of Service attack
-                "Memory_corruption": Box(low=0.0, high=1.0, shape=()), # Memory corruption severity
-                "Spoof_control": Box(low=0.0, high=1.0, shape=()), #control system spoofing
-                "Inject_bug": Box(low=0.0, high=1.0, shape=()), #Bug injection effect
-                "Radiation_surge": Box(low=0.0, high=1.0, shape=()), # Sudden radiation spikes
+                "communication_status": Box(low=0.0, high=1.0, shape=()), # 1: Fully operational, 0: no signal
+                "battery_health": Box(low=0.0, high=1.0, shape=()), #long-term batter degradation; not just current charge
+                "thermal_status": Box(low =-200.0, high= 200.0, shape =()), #subsystems operating within temperature ranges
+                "orbit_deviation": Box(low=0.0, high=1.0, shape=()), #deviation from intended orbit path
+                "neighbour_state_trust": Box(low=0.0, high=1.0, shape=()), #confidence/trust score on the shared data from neighbouring satellites
+                "data_queue_size": Box(low = 0.0, high=100.0, shape=()), #reflects the varying traffic loads-congestion at 90 MB might force data offloading strategies
+                "redundancy_status": Box(low = 0.0, high = 1.0, shape=()) #1: fully redundant, 0: no redundancy
 
-                # Defense system states (each defense action gets a variable)
-                "Boost_power": Box(low=0.0, high=1.0, shape=()), # Power boost capability
-                "Repair_memory": Box(low=0.0, high=1.0, shape=()), # Memory repair system
-                "Stabilize_control": Box(low=0.0, high=1.0, shape=()), # Control stability mechanism
-                "Reset_attack_flag": Box(low=0.0, high=1.0, shape=()) #Attack mitigation attack
 
             })
             for agent in self.agents
         }
 
-        self.agent_selector = agent_selector(self.agents)
-        self.agent_selection = self.agent_selector.reset()
+        self.agent_selector = agent_selector(self.agents) #creates a turn based system for agents, acting will be in sequence
+        self.agent_selection = self.agent_selector.reset() #Resets the agent selection to the first agent
 
         self.state = None
-        self.rewards = {agent: 0.0 for agent in self.agents}
-        self.dones = {agent: False for agent in self.agents}
-        self.infos = {agent: {} for agent in self.agents}
+        self.rewards = {agent: 0.0 for agent in self.agents} #reward tracking system for each agent
+        self.dones = {agent: False for agent in self.agents} #tracks if the agent finished acting in the episode``
+        self.infos = {agent: {} for agent in self.agents} #holds miscellaneous information for each agent
 
     def reset(self, seed=None, options=None):
         self.agents = self.possible_agents[:]
@@ -94,20 +93,57 @@ class SatelliteDefenseEnv(AECEnv):
 
 
 
-        def observe(self, agent):
+    def observe(self, agent):
             return {k: self.state[k] for k in self.observation_spaces[agent].spaces.keys()}
         
-        def step(self, action):
-            agent = self.agent_selection
+    def step(self, action):
+        agent = self.agent_selection
 
-            if self.dones[agent]:
-                self._was_done_step(action)
-                return
-            
-            if "attacker" in agent:
-                self._attacker_action(action)
-            else:
-                self._defender_action(action)
+        if self.dones[agent]:
+            self._was_done_step(action)
+            return
+        
+        value = action[0]
+
+        if "attacker" in agent:
+            self._attacker_action(action)
+        else:
+            self._defender_action(action)
+
+        self._apply_radiation_decay()
+        self._update_done_status()
+
+        for agent in self.agents:
+            self.rewards[agent] = self._get_reward(agent)
+
+        self.agent_selection = self.agent_selector.next()
+
+    def _attacker_action(self, agent, intensity):
+        attack_map = {                
+        }
+
+        #simulate the attack strategies
+
+    def _defender_action(self, agent, effort):
+        defense_map = {
+        }
+
+    def _apply_radiation_decay(self):
+        decay_rate = 0.01
+        
+    def _get_reward(self, agent):
+        health = ()/#no.of variables
+
+
+    def _update_done_status(self):
+
+
+    def render(self):
+
+        
+    def close(self):
+        pass
+
 
 # have to work on the step function, attacket action, defender action,
 # and the radiation decay function, getting reward, update status and the render function            
