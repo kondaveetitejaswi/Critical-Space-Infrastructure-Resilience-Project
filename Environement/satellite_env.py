@@ -62,34 +62,48 @@ class SatelliteDefenseEnv(AECEnv):
         self.dones = {agent: False for agent in self.agents} #tracks if the agent finished acting in the episode``
         self.infos = {agent: {} for agent in self.agents} #holds miscellaneous information for each agent
 
-    def reset(self, seed=None, options=None):
+
+    def reset(self, seed=None, options= None):
+        #restoring the agents
         self.agents = self.possible_agents[:]
         self.agent_selector = agent_selector(self.agents)
         self.agent_selection = self.agent_selector.reset()
 
+        #applying the partial deterioration of the satellite system
         self.state = {
-            "power": 1.0,
-            "memory": 1.0,
-            "control": 1.0,
-            "software_health": 1.0,
-            "radiation_level": 0.0,
-            "under_attack": 0.0,
-
-            "DoS_attack": 0.0,
-            "Memory_corruption": 0.0,
-            "Spoof_control": 0.0,
-            "Inject_bug": 0.0,
-            "Radiation_surge": 0.0,
-
-            "Boost_power": 1.0,
-            "Repair_memory": 1.0,
-            "Stabilize_control": 1.0,
-            "Reset_attack_flag": 1.0
+            "power": max(0.9, self.state.get("power", 1.0) - np.random.uniform(0.01, 0.03)),
+            "memory": max(0.85, self.state.get("memory", 1.0) - np.random.uniform(0.02, 0.04)),
+            "control": max(0.85, self.state.get())
         }
 
-        self.rewards = {agent: 0.0 for agent in self.agents}
-        self.dones = {agent: False for agent in self.agents}
-        self.infos = {agent: {} for agent in self.agents}
+    # def reset(self, seed=None, options=None):
+    #     self.agents = self.possible_agents[:]
+    #     self.agent_selector = agent_selector(self.agents)
+    #     self.agent_selection = self.agent_selector.reset()
+
+    #     self.state = {
+    #         "power": 1.0,
+    #         "memory": 1.0,
+    #         "control": 1.0,
+    #         "software_health": 1.0,
+    #         "radiation_level": 0.0,
+    #         "under_attack": 0.0,
+
+    #         "DoS_attack": 0.0,
+    #         "Memory_corruption": 0.0,
+    #         "Spoof_control": 0.0,
+    #         "Inject_bug": 0.0,
+    #         "Radiation_surge": 0.0,
+
+    #         "Boost_power": 1.0,
+    #         "Repair_memory": 1.0,
+    #         "Stabilize_control": 1.0,
+    #         "Reset_attack_flag": 1.0
+    #     }
+
+    #     self.rewards = {agent: 0.0 for agent in self.agents}
+    #     self.dones = {agent: False for agent in self.agents}
+    #     self.infos = {agent: {} for agent in self.agents}
 
 
 
