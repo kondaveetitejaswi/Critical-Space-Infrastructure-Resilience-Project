@@ -61,7 +61,7 @@ class SatelliteDefenseEnv(AECEnv):
         self.rewards = {agent: 0.0 for agent in self.agents} #reward tracking system for each agent
         self.dones = {agent: False for agent in self.agents} #tracks if the agent finished acting in the episode``
         self.infos = {agent: {} for agent in self.agents} #holds miscellaneous information for each agent
-
+        self.defender_risk = {agent: {} for agent in self.agents}
 
     def reset(self, seed=None, options= None):
         #restoring the agents
@@ -73,92 +73,244 @@ class SatelliteDefenseEnv(AECEnv):
         self.state = {
             "power": max(0.9, self.state.get("power", 1.0) - np.random.uniform(0.01, 0.03)),
             "memory": max(0.85, self.state.get("memory", 1.0) - np.random.uniform(0.02, 0.04)),
-            "control": max(0.85, self.state.get())
+            "control": max(0.85, self.state.get("control", 1.0) - np.random.uniform(0.02, 0.04)),  
+            "software_health": max(0.85, self.state.get("software_health", 1.0) - np.random.uniform(0.02, 0.04)),  
+        
+            "radiation_level": min(100.0, self.state.get("radiation_level", 0.0) + np.random.uniform(0.5, 1.5)),  
+
+            "under_attack": 0.0,
+
+            "signal_strength": max(-120, min(-50, self.state.get("signal_strength", -80) - np.random.uniform(1, 5))),  
+
+            "communication_status": max(0.95, self.state.get("communication_status", 1.0) - np.random.uniform(0.01, 0.02)),  
+            "battery_health": max(0.9, self.state.get("battery_health", 1.0) - np.random.uniform(0.01, 0.03)),  
+
+            "thermal_status": max(-200, min(200, self.state.get("thermal_status", 0.0) + np.random.uniform(-5, 5))),  
+            "orbit_deviation": min(5.0, self.state.get("orbit_deviation", 0.0) + np.random.uniform(0.02, 0.08)),  
+            "neighbor_state_trust": max(0.5, self.state.get("neighbor_state_trust", 1.0) - np.random.uniform(0.01, 0.05)),  
+            "data_queue_size": max(0, min(100, self.state.get("data_queue_size", 10.0) + np.random.uniform(-5, 5))),  
+            "redundancy_status": max(0.6, self.state.get("redundancy_status", 1.0) - np.random.uniform(0.01, 0.03)),  
+        
         }
+        
+        self._apply_environment_decay()
 
-    # def reset(self, seed=None, options=None):
-    #     self.agents = self.possible_agents[:]
-    #     self.agent_selector = agent_selector(self.agents)
-    #     self.agent_selection = self.agent_selector.reset()
-
-    #     self.state = {
-    #         "power": 1.0,
-    #         "memory": 1.0,
-    #         "control": 1.0,
-    #         "software_health": 1.0,
-    #         "radiation_level": 0.0,
-    #         "under_attack": 0.0,
-
-    #         "DoS_attack": 0.0,
-    #         "Memory_corruption": 0.0,
-    #         "Spoof_control": 0.0,
-    #         "Inject_bug": 0.0,
-    #         "Radiation_surge": 0.0,
-
-    #         "Boost_power": 1.0,
-    #         "Repair_memory": 1.0,
-    #         "Stabilize_control": 1.0,
-    #         "Reset_attack_flag": 1.0
-    #     }
-
-    #     self.rewards = {agent: 0.0 for agent in self.agents}
-    #     self.dones = {agent: False for agent in self.agents}
-    #     self.infos = {agent: {} for agent in self.agents}
+        self.rewards = {agent:0.0 for agent in self.agents}
+        self.dones = {agent: False for agent in self.agents}
+        self.infos = {agent: {} for agent in self.agents}
+        self.defender_risk = {agent: {} for agent in self.agents}
 
 
+    def observe(self, agent): #fully observable environment
+            if agent not in self.agents:
+                return None
+            
+            obs = {}
 
-    def observe(self, agent):
-            return {k: self.state[k] for k in self.observation_spaces[agent].spaces.keys()}
+            #Attackers focus on system weaknesses
+            if "attacker" in agent:
+                obs = {
+                    "memory": self.state["memory"],
+                    "software_health": self.state["software_health"],
+                    "communication_status": self.state["communication_status"],
+                    "neighbor_state_trust": self.state["neighbor_state_trust"],
+                    "data_queue_size": self.state["data_queue_size"],
+                    "redundancy_status": self.state["redundancy_status"],
+                    "power": self.state["power"],
+                    "control": self.state["control"],
+                }
+
+            elif "defender" in agent:
+                obs = {
+                    "under_attack": self.state["under_attack"],
+                    "radiation_level": self.state["radiation_level"],
+                    "thermal_status": self.state["thermal_status"],
+                    "orbit_deviation": self.state["orbit_deviation"],
+                    "signal_strength": self.state["signal_strength"],
+                    "control": self.state["control"],
+                    "battery_health": self.state["battery_health"],
+                    "power": self.state["power"]
+                }
+
+            return obs
         
     def step(self, action):
         agent = self.agent_selection
 
-        if self.dones[agent]:
-            self._was_done_step(action)
+        if agent not in self.agents:
             return
         
-        value = action[0]
+        #attack or defense logic
+        self._apply_action(agent, action)
 
+        #Atttackers collaborate and share vulnerability insights
         if "attacker" in agent:
-            self._attacker_action(action)
-        else:
-            self._defender_action(action)
+            self._update_attacker_strategy()
+
+        #defenders collborate to enhance system resilience
+        elif "defender" in agent:
+            self._share_risk_alerts()
+            self._adjust_defense_priorities()
+
+        self.rewards[agent] = self._compute_reward(agent)
 
         self._apply_radiation_decay()
-        self._update_done_status()
 
-        for agent in self.agents:
-            self.rewards[agent] = self._get_reward(agent)
+        self._update_done_status()
 
         self.agent_selection = self.agent_selector.next()
 
-    def _attacker_action(self, agent, intensity):
-        attack_map = {                
-        }
+    def _apply_action(self, agent, action):
+        if "attacker" in agent:
+            self._attacker_action(agent, action)
 
-        #simulate the attack strategies
+        elif "defender" in agent:
+            self._defender_action(agent, action)
 
-    def _defender_action(self, agent, effort):
-        defense_map = {
-        }
+    def _apply_attack_decay(self, agent, action):
+        attack_success = False
 
-    def _apply_radiation_decay(self):
-        decay_rate = 0.01
+        if action == "DoS_attack":
+            success_prob = 0.4 if self.state["communication_status"] < 0.7 else 0.8
+            attack_success = np.random.rand() < success_prob
+            if attack_success:
+                self.state["communication_status"] = max(0.0, self.state["communication_status"] - 0.2)
+                self.state["under_attack"] = 1.0
+                self.rewards[agent] += 1.0
+
+        elif action == "Memory_corruption":
+            success_prob = 0.5 if self.state["memory"] < 0.6 else 0.9
+            attack_success = np.random.rand() < success_prob
+            if attack_success:
+                self.state["memory"] = max(0.0, self.state["memory"] - 0.2)
+                self.state["under_attack"] = 1.0
+                self.rewards[agent] += 1.0
+
+        return attack_success
+
+
+    def _update_attacker_strategy(self):
+        """Attackers analyze past attack efficiency and adjust targeting logic."""
+        attack_focus = {}  
         
-    def _get_reward(self, agent):
-        health = ()/#no.of variables
+        for attacker in self.agents:
+            if "attacker" in attacker:
+                attack_focus[attacker] = {
+                    "communication_status": 1 - self.state["communication_status"],
+                    "software_health": 1 - self.state["software_health"],
+                    "memory": 1 - self.state["memory"]
+                }
+
+        # Attackers coordinate by prioritizing most vulnerable areas
+        avg_weakness = {
+            key: sum(values[key] for values in attack_focus.values()) / len(attack_focus)
+            for key in attack_focus[list(attack_focus.keys())[0]]
+        }
+
+        self.attack_priority = max(avg_weakness, key=avg_weakness.get)  # Most exploitable target
+
+    def _apply_defense_effects(self, agent, action):
+        """Defenders reinforce weak spots to counter attack threats."""
+        if action == "Increase_shielding":
+            self.state["radiation_level"] = max(0.0, self.state["radiation_level"] - 2.0)
+
+        elif action == "Boost_communication":
+            self.state["communication_status"] = min(1.0, self.state["communication_status"] + 0.1)
+
+        elif action == "Enhance_memory_integrity":
+            self.state["memory"] = min(1.0, self.state["memory"] + 0.1)
+        
+    def _share_risk_alerts(self):
+        """Defenders exchange vulnerability information to improve threat anticipation."""
+        alert_levels = {}
+
+        for defender in self.agents:
+            if "defender" in defender:
+                alert_levels[defender] = {
+                    "under_attack": self.state["under_attack"],
+                    "radiation_level": self.state["radiation_level"],
+                    "neighbor_state_trust": self.state["neighbor_state_trust"]
+                }
+
+        # Broadcast average alert level to all defenders
+        avg_alert = {
+            key: sum(values[key] for values in alert_levels.values()) / len(alert_levels)
+            for key in alert_levels[list(alert_levels.keys())[0]]
+        }
+
+        for defender in alert_levels:
+            self.defender_risk[defender] = avg_alert
+
+
+    def _adjust_defense_priorities(self):
+        """Defenders allocate defensive measures dynamically based on attack patterns."""
+        threat_levels = {
+            "communication_status": self.state["communication_status"] < 0.6,
+            "memory": self.state["memory"] < 0.6,
+            "radiation_level": self.state["radiation_level"] > 80.0
+        }
+
+        # Prioritize protecting the most damaged aspect
+        self.defense_target = max(threat_levels, key=threat_levels.get)
+
+
+    def _compute_reward(self, agent):
+        if "attacker" in agent:
+            return (1 - self.state["software_health"]) * 5  + (1 - self.state["communication_status"]) * 3
+        
+        elif "defender" in agent:
+            return (self.state["software_health"] * 4) + (self.state["communication_status"] * 2) + (1 - self.state["radiation_level"] / 100) * 1
+
+        
+    def _apply_environment_decay(self):
+        """Increase deterioration rate for satellites in extreme environments."""
+        radiation_factor = self.state["radiation_level"] / 100.0  # Normalize radiation impact
+        
+        # Apply accelerated deterioration if radiation is high
+        self.state["battery_health"] = max(0.7, self.state["battery_health"] - np.random.uniform(0.01, 0.05) * (1 + radiation_factor))
+        self.state["control"] = max(0.8, self.state["control"] - np.random.uniform(0.02, 0.06) * (1 + radiation_factor))
+        self.state["neighbor_state_trust"] = max(0.5, self.state["neighbor_state_trust"] - np.random.uniform(0.01, 0.05) * (1 + radiation_factor))
 
 
     def _update_done_status(self):
+        """Checks if the episode should terminate due to extreme system failure."""
+        for agent in self.agents:
+            if self.state["software_health"] < 0.2 or self.state["communication_status"] < 0.2:
+                self.dones[agent] = True  # System breakdown leads to episode termination
 
-
-    def render(self):
-
+    def render(self, mode="human"):
+        """Displays the current environment state for debugging and tracking."""
+        if mode != "human":
+            return  # Rendering only works in human-readable mode
         
+        print("\n--- Environment Status ---")
+        print(f"Satellite Power: {self.state['power']:.2f}")
+        print(f"Memory Integrity: {self.state['memory']:.2f}")
+        print(f"Control Stability: {self.state['control']:.2f}")
+        print(f"Software Health: {self.state['software_health']:.2f}")
+        print(f"Radiation Exposure: {self.state['radiation_level']:.2f}")
+        print(f"Under Attack: {self.state['under_attack']}")
+        print(f"Signal Strength: {self.state['signal_strength']:.2f} dBm")
+        print(f"Communication Status: {self.state['communication_status']:.2f}")
+        print(f"Battery Health: {self.state['battery_health']:.2f}")
+        print(f"Thermal Status: {self.state['thermal_status']:.2f}")
+        print(f"Orbit Deviation: {self.state['orbit_deviation']:.2f}")
+        print(f"Neighbor Trust: {self.state['neighbor_state_trust']:.2f}")
+        print(f"Data Queue Size: {self.state['data_queue_size']:.2f} MB")
+        print(f"Redundancy Status: {self.state['redundancy_status']:.2f}")
+        
+        print("\nAgent Status:")
+        for agent in self.agents:
+            print(f"{agent} -> Reward: {self.rewards[agent]:.2f}, Done: {self.dones[agent]}")
+
+        print("--- End of Render ---\n")
+
     def close(self):
-        pass
-
-
-# have to work on the step function, attacket action, defender action,
-# and the radiation decay function, getting reward, update status and the render function            
-
+        """Handles cleanup for environment shutdown."""
+        print("Closing Satellite Defense Environment...")
+        self.agents = []
+        self.state = None
+        self.rewards = {}
+        self.dones = {}
+        self.infos = {}
+        print("Environment closed successfully.")
