@@ -1,7 +1,7 @@
-from satellite_env import SatelliteEnv
+from satellite_env import SatelliteDefenseEnv
 import numpy as np
 
-env  = SatelliteEnv()
+env  = SatelliteDefenseEnv()
 env.reset()
 
 for agent in env.agent_iter():
