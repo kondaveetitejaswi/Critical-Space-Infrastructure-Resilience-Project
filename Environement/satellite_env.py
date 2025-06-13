@@ -6,6 +6,8 @@ from pettingzoo.utils.agent_selector import agent_selector
 class SatelliteDefenseEnv(AECEnv):
     metadata = {"render_modes": ['human'], "name": "satellite_defense_v0", "is_multiagent": True}
 
+    
+    # CORE PETTINGZOO ENVIRONMENT CLASS FOR SATELLITE DEFENSE SIMULATION
     def __init__(self):
         super().__init__()
 

@@ -18,3 +18,5 @@ for agent in env.agent_iter():
 
 env.close()  # Close the environment when done
 print("Environment closed.")
+
+
