@@ -112,26 +112,38 @@ class SatelliteDefenseEnv(AECEnv):
             #Attackers focus on system weaknesses
             if "attacker" in agent:
                 obs = {
+                    "power": self.state["power"],
                     "memory": self.state["memory"],
+                    "control": self.state["control"],
                     "software_health": self.state["software_health"],
+                    "radiation_level": self.state["radiation_level"],
+                    "under_attack": self.state["under_attack"],
+                    "signal_strength": self.state["signal_strength"],
                     "communication_status": self.state["communication_status"],
+                    "battery_health": self.state["battery_health"],
+                    "thermal_status": self.state["thermal_status"],
+                    "orbit_deviation": self.state["orbit_deviation"],
                     "neighbor_state_trust": self.state["neighbor_state_trust"],
                     "data_queue_size": self.state["data_queue_size"],
-                    "redundancy_status": self.state["redundancy_status"],
-                    "power": self.state["power"],
-                    "control": self.state["control"],
+                    "redundancy_status": self.state["redundancy_status"]   
                 }
 
             elif "defender" in agent:
                 obs = {
-                    "under_attack": self.state["under_attack"],
+                    "power": self.state["power"],
+                    "memory": self.state["memory"],
+                    "control": self.state["control"],
+                    "software_health": self.state["software_health"],
                     "radiation_level": self.state["radiation_level"],
+                    "under_attack": self.state["under_attack"],
+                    "signal_strength": self.state["signal_strength"],
+                    "communication_status": self.state["communication_status"],
+                    "battery_health": self.state["battery_health"],
                     "thermal_status": self.state["thermal_status"],
                     "orbit_deviation": self.state["orbit_deviation"],
-                    "signal_strength": self.state["signal_strength"],
-                    "control": self.state["control"],
-                    "battery_health": self.state["battery_health"],
-                    "power": self.state["power"]
+                    "neighbor_state_trust": self.state["neighbor_state_trust"],
+                    "data_queue_size": self.state["data_queue_size"],
+                    "redundancy_status": self.state["redundancy_status"]
                 }
 
             return obs
@@ -223,6 +235,8 @@ class SatelliteDefenseEnv(AECEnv):
     def _defender_action(self, agent, action):
         # New comprehensive defender action method
         defense_value = action[0] 
+
+        obs = self.observe(agent)
 
 
     def _apply_attack_decay(self, agent, action):
