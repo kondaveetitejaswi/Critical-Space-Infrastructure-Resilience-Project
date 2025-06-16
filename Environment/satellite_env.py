@@ -161,13 +161,58 @@ class SatelliteDefenseEnv(AECEnv):
         self._update_done_status()
 
         self.agent_selection = self.agent_selector.next()
+    
 
+    # MAIN ACTION HANDLING METHODS 
     def _apply_action(self, agent, action):
         if "attacker" in agent:
             self._attacker_action(agent, action)
 
         elif "defender" in agent:
             self._defender_action(agent, action)
+
+    def _attacker_action(self, agent, action):
+        # handle attacker actions in a cont value between 0 and 1
+        action_value = action[0] # extract the single cont value
+
+        obs = self.observe(agent)
+
+        vulnerabilities = {
+            "memory_status": 1 - obs["memory"],
+            "software_attack": 1 - obs["software_health"],
+            "communication_attack": 1 - obs["communication_status"],
+            "trust_attack": 1 - obs["neighbor_state_trust"],
+            "data_overflow_attack": 1 - obs["data_queue_size"],
+            "redundancy_attack": 1 - obs["redundancy_status"],
+            "power_attack": 1 - obs["power"],
+            "control_attack": 1 - obs["control"]
+        }
+
+        #choose attack type based on action value and vulnerabilities
+        sorted_vulnerabilities = sorted(vulnerabilities.items(), key = lambda x: x[1], reverse = True)
+
+        vulnerability_method = 0.6
+        critical_threshold = 0.3
+
+        if action_value < 0.15:
+            # targeting systems that are critically vulnerable first
+            critical_systems = [sys for sys, val in sorted_vulnerabilities if val < critical_threshold]
+            if critical_systems:
+                attack_type = critical_systems[0]
+            else:
+                attack_type = sorted_vulnerabilities[0][0]
+        elif action_value < 0.25:
+            attack_type = sorted_vulnerabilities[1][0] if len(sorted_vulnerabilities) > 1 else sorted_vulnerabilities[0][0]
+
+        else:
+            # Weighted distribution based on current system state and potential impact
+
+
+
+    def _defender_action(self, agent, action):
+        # New comprehensive defender action method
+
+
 
     def _apply_attack_decay(self, agent, action):
         attack_success = False
