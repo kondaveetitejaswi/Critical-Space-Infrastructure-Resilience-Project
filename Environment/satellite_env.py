@@ -191,7 +191,7 @@ class SatelliteDefenseEnv(AECEnv):
         #choose attack type based on action value and vulnerabilities
         sorted_vulnerabilities = sorted(vulnerabilities.items(), key = lambda x: x[1], reverse = True)
 
-        vulnerability_method = 0.6
+        vulnerability_threshold = 0.6
         critical_threshold = 0.3
 
         if action_value < 0.15:
@@ -206,12 +206,23 @@ class SatelliteDefenseEnv(AECEnv):
 
         else:
             # Weighted distribution based on current system state and potential impact
-
+            if obs["ememory"] < vulnerability_threshold and obs["software_health"] < vulnerability_threshold:
+                attack_type = "memory_status" if action_value < 0.4 else "software_attack"
+            elif obs["communication_status"] < vulnerability_threshold and obs["neighbor_state_trust"] < vulnerability_threshold:
+                attack_type = "communication_attack" if action_value < 0.5 else "trust_attack"
+            elif obs["power"] < vulnerability_threshold:
+                attack_type = "power_attack" if action_value < 0.6 else "control_attack"
+            elif obs["data_queue_size"] > 80:
+                attack_type = "data_overflow_attack"
+            elif obs["redundancy_status"] < vulnerability_threshold:
+                attack_type = "redundancy_attack"
+            else:
+                attack_type = "control_attack"
 
 
     def _defender_action(self, agent, action):
         # New comprehensive defender action method
-
+        defense_value = action[0] 
 
 
     def _apply_attack_decay(self, agent, action):
