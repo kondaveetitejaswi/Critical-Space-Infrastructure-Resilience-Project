@@ -477,6 +477,12 @@ class SatelliteDefenseEnv(AECEnv):
                 "cost": 0.1,
                 "success_prob": 0.8
             },
+            "battery_protection": {
+                "target": "battery_health",
+                "improvement": 0.2,
+                "cost": 0.1,
+                "success_prob": 0.8
+            },
             "radiation_shield": {
                 "target": "radiation_level",
                 "improvement": -2.0,
@@ -501,48 +507,304 @@ class SatelliteDefenseEnv(AECEnv):
                 "cost": 0.1,
                 "success_prob": 0.8
             },
+            "signal_boost": {
+                "target": "signal_strength",
+                "improvement": 5.0,
+                "cost": 0.1,
+                "success_prob": 0.75
+            },
             "thermal_regulation": {
                 "target": "thermal_status",
                 "improvement": -10.0,
                 "cost": 0.1,
                 "success_prob": 0.9
             },
-            "orbit_regulation": 
+            "control_system_protection":{
+                "target": "control",
+                "improvement": 0.2,
+                "cost": 0.15,
+                "success_prob": 0.8
+            },
+            "orbit_correction": {
+                "target": "orbit_deviation",
+                "improvement": -0.1,
+                "cost": 0.2,
+                "success_prob": 0.7
+            },
+
+            "trust_verification": {
+                "target": "neighbor_state_trust",
+                "improvement": 0.15,
+                "cost": 0.05,
+                "success_prob": 0.9
+            },
+            "queue_management": {
+                "target": "data_queue_size",
+                "improvement": -10.0,
+                "cost": 0.1,
+                "success_prob": 0.8
+            },
+            "redundancy_boost": {
+                "target": "redundancy_status",
+                "improvement": 0.2,
+                "cost": 0.15,
+                "success_prob": 0.85
+            },
+
+            "emergency_reboot": {
+                "target": "under_attack",
+                "improvement": -1.0,
+                "cost": 0.3,
+                "success_prob": 0.6
+            }
             
         }
+
+        if action in defense_params:
+            params = defense_params[action]
+            success = np.random.rand() < params["success_prob"]
+
+            if success:
+                target = params["target"]
+                improvement = params["improvement"]
+
+                if target in ["radiation_level", "thermal_status", "data_queue_size"]:
+                    self.state[target] = max(
+                        self.observation_spaces[agent][target].low,
+                        min(self.state[target] + improvement, self.observation_spaces[agent][target].high)
+                    )
+
+                else:
+                    self.state[target] = max(0.0, min(1.0, self.state[target] + improvement))
+
+                self.rewards[agent] += 1.0
+                self.state["under_attack"] = max(0.0, self.state["under_attack"] - 0.2)
+
+
+                self.apply_defense_reinforcement(action)
+            return success
+        return False
         
     def _share_risk_alerts(self):
         """Defenders exchange vulnerability information to improve threat anticipation."""
-        alert_levels = {}
+        risk_metrics = {
+            "under_attack": self.state["under_attack"],
+            "radiation_risk": self.state["radiation_level"] / 100.0,
+            "power_risk": 1 - self.state["power"],
+            "memory_risk": 1 - self.state["memory"],
+            "control_risk": 1 - self.state["control"],
+
+            "software_risk": 1 - self.state["software_health"],
+            "signal_risk": 1 - self.state["signal_strength"],
+
+            "communication_risk": 1 - self.state["communication_status"],
+
+            "battery_risk": 1 - self.state["battery_health"],
+
+            "thermal_risk": abs(self.state["thermal_status"]) / 200.0,
+            "orbit_risk": self.state["orbit_deviation"],
+            "trust_risk": 1 - self.state["neighbor_state_trust"],
+            "queue_risk": self.state["data_queue_size"] / 100.0,
+            "redundancy_risk": 1 - self.state["redundancy_status"]
+
+        }
 
         for defender in self.agents:
             if "defender" in defender:
-                alert_levels[defender] = {
-                    "under_attack": self.state["under_attack"],
-                    "radiation_level": self.state["radiation_level"],
-                    "neighbor_state_trust": self.state["neighbor_state_trust"]
+                weighted_risks = {
+                    "critical": max(
+                        risk_metrics["power_risk"],
+                        risk_metrics["software_risk"],
+                        risk_metrics["under_attack"]
+                    ),
+                    "high": max(
+                        risk_metrics["memory_risk"],
+                        risk_metrics["communication_risk"],
+                        risk_metrics["control_risk"]
+                    ),
+                    "medium": max(
+                        risk_metrics["radiation_risk"],
+                        risk_metrics["thermal_risk"],
+                        risk_metrics["signal_risk"],
+                        risk_metrics["battery_risk"]
+                    ),
+                    "low": max(
+                        risk_metrics["orbit_risk"],
+                        risk_metrics["trust_risk"],
+                        risk_metrics["queue_risk"],
+                        risk_metrics["redundancy_risk"]
+                    )
                 }
 
-        # Broadcast average alert level to all defenders
-        avg_alert = {
-            key: sum(values[key] for values in alert_levels.values()) / len(alert_levels)
-            for key in alert_levels[list(alert_levels.keys())[0]]
-        }
-
-        for defender in alert_levels:
-            self.defender_risk[defender] = avg_alert
+                self.defender_risk[defender] = weighted_risks
 
 
     def _adjust_defense_priorities(self):
         """Defenders allocate defensive measures dynamically based on attack patterns."""
         threat_levels = {
-            "communication_status": self.state["communication_status"] < 0.6,
-            "memory": self.state["memory"] < 0.6,
-            "radiation_level": self.state["radiation_level"] > 80.0
+            # critical priority systems
+            "power": {"value": self.state["power"], "critical": 0.4, "high":0.6},
+            "software_health": {"value": self.state["software_health"], "critical": 0.4, "high": 0.7},
+            "under_attack": {"value": self.state["under_attack"], "critical": 0.7, "high": 0.5},
+
+            # High priority systems
+            "memory": {"value": self.state["memory"], "critical": 0.3, "high": 0.6},
+            "communication_status": {"value": self.state["communication_status"], "critical":0.4, "high": 0.7},
+            "control": {"value": self.state["control"], "critical": 0.4, "high":0.6},
+
+            # Medium priority systems
+            "radiation_level": {"value": self.state["radiation_level"], "critical": 80, "high": 60},
+            "thermal_status": {"value": abs(self.state["thermal_status"]), "critical": 150, "high":100},
+            "signal_strength": {"value": abs(self.state["signal_strength"]), "critical": -100, "high": -80},
+            "battery_health": {"value": self.state["battery_health"], "critical": 0.3, "high": 0.6},
+
+            # Low priority systems
+            "orbit_deviation": {"value": self.state["orbit_deviation"], "critical": 0.8, "high": 0.6},
+            "neighbor_state_trust": {"value": self.state["neighbor_state_trust"], "critical": 0.3, "high": 0.6},
+            "data_queue_size": {"value": self.state["data_queue_size"], "critical": 90, "high": 70},
+            "redundancy_status": {"value": self.state["redundancy_status"], "critical": 0.3, "high": 0.6}
         }
 
-        # Prioritize protecting the most damaged aspect
-        self.defense_target = max(threat_levels, key=threat_levels.get)
+        priority_groups = {
+            "critical": ["power", "software_health", "under_attack"],
+            "high": ["memory", "communication_status", "control"],
+            "medium": ["radiation_level", "thermal_status", "signal_strength", "battery_health"],
+            "low": ["orbit_deviation", "neighbor_state_trust", "data_queue_size", "redundancy_status"]
+        }
+
+        threats = {priority: [] for priority in priority_groups.key()}
+
+        for priority, systems in priority_groups.items():
+            for system in systems:
+                thresh = threat_levels[system]
+                if system in ["radiation_level", "thermal_status", "data_queue_size"]:
+                    if thresh["value"] >= thresh["critical"]:
+                        threats["critical"].append(system)
+                    elif thresh["value"] >= thresh["high"]:
+                        threats["high"].append(system)
+                elif system == "signal_strength":
+                    if thresh["value"] <= thresh["critical"]:
+                        threats["critical"].append(system)
+                    elif thresh["value"] <= thresh["high"]:
+                        threats["high"].append(system)
+
+                else:
+                    if thresh["value"] <= thresh["critical"]:
+                        threats["critical"].append(system)
+                    elif thresh["value"] <= thresh["high"]:
+                        threats["high"].append(system)
+
+        if threats["critical"]:
+            self.defense_priority = threats["critical"][0]
+            self.defense_level = "critical"
+            self.defense_targets = threats["critical"]
+        elif threats["high"]:
+            self.defense_priority = threats["high"][0]
+            self.defense_level = "high"
+            self.defense_targets = threats["high"]
+        elif threats["medium"]:
+            self.defense_priority = threats["medium"][0]
+            self.defense_level = "medium"
+            self.defense_targets = threats["medium"]
+        else:
+            self.defense_priority = threats["low"][0] if threats["low"] else "power"
+            self.defense_level = "low"
+            self.defense_targets = threats["low"]
+
+        self.defense_info = {
+            "primary_target": self.defense_priority,
+            "threat_level": self.defense_level,
+            "all_threats": {level: systems for level, systems in threats.items() if systems},
+            "defense_targets": self.defense_targets
+        }
+
+
+    def apply_defense_reinforcement(self, defense_action):
+        reinforcement_effects = {
+            "power_defense": {
+                "software_health": 0.05,
+                "control": 0.05,
+                "battery_health": 0.05
+            },
+            "battery_boost": {
+                "power": 0.05,
+                "thermal_status": -5.0
+            },
+
+            # Core Systems
+            "radiation_shield": {
+                "memory": 0.05,
+                "software_health": 0.05,
+                "thermal_status": -5.0
+            },
+            "memory_protection": {
+                "software_health": 0.05,
+                "redundancy_status": 0.05,
+                "control": 0.03
+            },
+            "software_patch": {
+                "memory": 0.05,
+                "control": 0.05,
+                "data_queue_size": -5.0
+            },
+
+            # Communication Systems
+            "communication_boost": {
+                "neighbor_state_trust": 0.05,
+                "control": 0.05,
+                "signal_strength": 2.0
+            },
+            "signal_boost": {
+                "communication_status": 0.05,
+                "neighbor_state_trust": 0.03
+            },
+
+            #Environmental Systems
+            "thermal_regulation": {
+                "software_health": 0.05,
+                "memory": 0.05,
+                "battery_health": 0.03
+            },
+            "orbit_correction": {
+                "control": 0.05,
+                "communication_status": 0.05,
+                "signal_strength": 1.0
+            },
+
+            # Data and Trust Systems
+            "trust_verification": {
+                "communication_status": 0.05,
+                "redundancy_status": 0.05,
+                "data_queue_size": -3.0
+            },
+            "queue_management": {
+                "software_health": 0.05,
+                "memory": 0.05,
+                "control": 0.03
+            },
+
+            # Redundancy Systems
+            "redundancy_boost": {
+                "control": 0.05,
+                "memory": 0.05,
+                "software_health": 0.03
+            }
+        }
+
+        if defense_action in reinforcement_effects:
+            for target, improvement in reinforcement_effects[defense_action].items():
+                if target in ["thermal_status", "data_queue_size"]:
+                    self.state[target] = max(
+                        self.observation_spaces[self.agents[0]][target].low,
+                        self.state[target] + improvement
+                    )
+                elif target == "signal_strength":
+                    self.state[target] = min(
+                        -50.0, 
+                        max(-120.0, self.state[target] + improvement)
+                    )
+                else:
+                    self.state[target] = min(1.0, self.state[target] + improvement)
 
 
     def _compute_reward(self, agent):
