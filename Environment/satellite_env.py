@@ -122,10 +122,11 @@ class SatelliteDefenseEnv(AECEnv):
                     "communication_status": self.state["communication_status"],
                     "battery_health": self.state["battery_health"],
                     "thermal_status": self.state["thermal_status"],
-                    "orbit_deviation": self.state["orbit_deviation"],
+                    "orbit_deviation": self.state["orbit_deviation"], # follows state spoofing policy where the attacker can manipulate the orbit deviaiton reading
                     "neighbor_state_trust": self.state["neighbor_state_trust"],
-                    "data_queue_size": self.state["data_queue_size"],
-                    "redundancy_status": self.state["redundancy_status"]   
+                    "data_queue_size": self.state["data_queue_size"], # reports a wrong data measurement for the available data queue size, hence tamper with the data queue size
+                    "redundancy_status": self.state["redundancy_status"]   # FDI (False Data Injection) attack on the redundancy status;In satellites, if the telemetry 
+                                                                        # says "Backup computer OK" when it’s actually failed, the on-board supervisor may switch to a dead unit when the primary fails → total system loss.
                 }
 
             elif "defender" in agent:
@@ -190,107 +191,325 @@ class SatelliteDefenseEnv(AECEnv):
         obs = self.observe(agent)
 
         vulnerabilities = {
-            "memory_status": 1 - obs["memory"],
-            "software_attack": 1 - obs["software_health"],
-            "communication_attack": 1 - obs["communication_status"],
-            "trust_attack": 1 - obs["neighbor_state_trust"],
-            "data_overflow_attack": 1 - obs["data_queue_size"],
-            "redundancy_attack": 1 - obs["redundancy_status"],
             "power_attack": 1 - obs["power"],
-            "control_attack": 1 - obs["control"]
+            "memory_attack": 1 - obs["memory"],
+            "control_attack": 1 - obs["control"],
+            "software_attack": 1 - obs["software_health"],
+            "radiation_attack": 1 - obs["radiation_level"],
+            "attack_status": obs["under_attack"],
+            "signal_attack": 1 - obs["signal_strength"],
+            "communication_attack": 1 - obs["communication_status"],
+            "battery_attack": 1 - obs["battery_health"],
+            "thermal_attack": 1 - obs["thermal_status"],
+            "orbit_attack": 1 - obs["orbit_deviation"],
+            "neighbor_trust_attack": 1 - obs["neighbor_state_trust"],
+            "data_measurement_attack": 1 - obs["data_queue_size"],
+            "redundancy_attack": 1 - obs["redundancy_status"] 
         }
 
-        #choose attack type based on action value and vulnerabilities
-        sorted_vulnerabilities = sorted(vulnerabilities.items(), key = lambda x: x[1], reverse = True)
+        # Define subsystem groups
+        roots = ["power_attack", "battery_attack", "radiation_attack"]
+        thermal_related = ["thermal_attack"]
+        software_related = ["software_attack", "memory_attack"]
+        control_related = ["control_attack"]
+        communication_related = ["communication_attack", "signal_attack"]
+        redundancy_related = ["redundancy_attack"]
+        data_related = ["data_measurement_attack"]
+        orbit_related = ["orbit_attack"]
+        trust_related = ["neighbor_trust_attack"]
 
-        vulnerability_threshold = 0.6
-        critical_threshold = 0.3
+        #defining the realistic dependency order
+        dependency_chain = [
+            roots,
+            thermal_related,
+            software_related,
+            control_related,
+            communication_related,
+            redundancy_related,
+            data_related,
+            orbit_related,
+            trust_related
+        ]
 
-        if action_value < 0.15:
-            # targeting systems that are critically vulnerable first
-            critical_systems = [sys for sys, val in sorted_vulnerabilities if val < critical_threshold]
-            if critical_systems:
-                attack_type = critical_systems[0]
-            else:
-                attack_type = sorted_vulnerabilities[0][0]
-        elif action_value < 0.25:
-            attack_type = sorted_vulnerabilities[1][0] if len(sorted_vulnerabilities) > 1 else sorted_vulnerabilities[0][0]
+        attack_type = None
+        threshold = 0.6
 
-        else:
-            # Weighted distribution based on current system state and potential impact
-            if obs["ememory"] < vulnerability_threshold and obs["software_health"] < vulnerability_threshold:
-                attack_type = "memory_status" if action_value < 0.4 else "software_attack"
-            elif obs["communication_status"] < vulnerability_threshold and obs["neighbor_state_trust"] < vulnerability_threshold:
-                attack_type = "communication_attack" if action_value < 0.5 else "trust_attack"
-            elif obs["power"] < vulnerability_threshold:
-                attack_type = "power_attack" if action_value < 0.6 else "control_attack"
-            elif obs["data_queue_size"] > 80:
-                attack_type = "data_overflow_attack"
-            elif obs["redundancy_status"] < vulnerability_threshold:
-                attack_type = "redundancy_attack"
-            else:
-                attack_type = "control_attack"
+        for group in dependency_chain:
+            weak_points = [(k, vulnerabilities[k]) for k in group if vulnerabilities[k] > threshold]
+            if weak_points:
+                weakest = max(weak_points, key =lambda x: x[1])
+                attack_type = weakest[0]
+                break
+        if attack_type is None:
+            attack_type = "control_attack"
+
+        if obs["data_queue_size"] > 80:
+            attack_type = "data_measurement_attack"
+        elif obs["under_attack"]:
+            attack_type = "software_attack"
+
+        self.state["under_attack"] = 1.0  # Mark that an attack is in progress
 
 
     def _defender_action(self, agent, action):
-        # New comprehensive defender action method
-        defense_value = action[0] 
+        defense_strength = action[0] 
 
         obs = self.observe(agent)
+
+        roots = ["power", "battery_health", "radiation_level"]
+        thermal_related = ["thermal_status"]
+        software_related = ["software_health", "memory"]
+        control_related = ["control"]
+        communication_related = ["communication_status", "signal_strength"]
+        redundancy_related = ["redundancy_status"]
+        data_related = ["data_queue_size"]
+        orbit_related = ["orbit_deviation"]
+        trust_related = ["neighbor_state_trust"]
+
+        dependency_chain = [
+            roots,
+            thermal_related,
+            software_related,
+            control_related,
+            communication_related,
+            redundancy_related,
+            data_related,
+            orbit_related,
+            trust_related
+        ]
+
+        weak_threshold = 0.75
+        high_threshold_queue = 70
+        high_threshold_orbit = 5.0
+
+        defense_type = None
+
+        for group in dependency_chain:
+            weak_points = []
+            for var in group:
+                val = obs[var]
+                if var == "data_queue_size" and val > high_threshold_queue:
+                    weak_points.append((var, val))
+                elif var == "orbit_deviation" and val > high_threshold_orbit:
+                    weak_points.append((var, val))
+                elif var == "radiation_level" and val > 50:
+                    weak_points.append((var, val))
+                else:
+                    if val < weak_threshold:
+                        weak_points.append((var, val))
+            if weak_points:
+                if group in [data_related, orbit_related, ["radiation_level"]]:
+                    defense_target = max(weak_points, key=lambda x: x[1])[0]
+                else:
+                    defense_target = min(weak_points, key = lambda x: x[1])[0]
+                break
+        
+        if defense_target is None:
+            defense_target = "control"
+
+        #apply defense: increase or decrease depending on the variable
+        if defense_target == "radiation_level":
+            self.state[defense_target] = max(0.0, self.state[defense_target] - 5 * defense_strength)
+        elif defense_target == "data_queue_size":
+            self.state[defense_target] = max(0.0, self.state[defense_target] - 10 * defense_strength)
+        elif defense_target == "orbit_deviation":
+            self.state[defense_target] = max(0.0, self.state[defense_target] - 0.5 * defense_strength)
+        else:
+            # Normal system health vars: boost them
+            self.state[defense_target] = min(1.0, self.state[defense_target] + 0.1 * defense_strength)
+
+        # Mark that an active defense was done
+        self.state["under_attack"] = 0.0  #  reset if defender countered an attack
 
 
     def _apply_attack_decay(self, agent, action):
         attack_success = False
 
-        if action == "DoS_attack":
-            success_prob = 0.4 if self.state["communication_status"] < 0.7 else 0.8
-            attack_success = np.random.rand() < success_prob
-            if attack_success:
-                self.state["communication_status"] = max(0.0, self.state["communication_status"] - 0.2)
-                self.state["under_attack"] = 1.0
-                self.rewards[agent] += 1.0
+        base_decay = 0.2
+        threshold = 0.6
 
-        elif action == "Memory_corruption":
-            success_prob = 0.5 if self.state["memory"] < 0.6 else 0.9
-            attack_success = np.random.rand() < success_prob
+        attack_params = {
+            "power_attack": {
+                "target": "power",
+                "success_prob": 0.7 if self.state["power"] < threshold else 0.4,
+                "decay": base_decay * 1.5,
+                "reward": 1.5
+            },
+            "battery_attack": {
+                "target": "battery_health",
+                "success_prob": 0.7 if self.state["battery_health"] < threshold else 0.4,
+                "decay": base_decay * 1.5,
+                "reward": 1.5
+            },
+            "radiation_attack": {
+                "target": "radiation_level",
+                "success_prob": 0.5,
+                "decay": base_decay * 2.0,
+                "reward": 1.2
+            },
+
+            "thermal_attack": {
+                "target": "thermal_status",
+                "success_prob": 0.6 if abs(self.state["thermal_status"]) > 100 else 0.3,
+                "decay": 10,
+                "reward": 1.0
+            },
+
+            "software_attack": {
+                "target": "software_health",
+                "success_prob": 0.6 if self.state["under_attack"] else 0.2,
+                "decay": base_decay,
+                "reward": 1.0
+            },
+            "memory_attack": {
+                "target": "memory",
+                "success_prob": 0.6 if self.state["memory"] < threshold else 0.3,
+                "decay": base_decay,
+                "reward": 1.0
+            },
+
+            "control_attack": {
+                "target": "control",
+                "success_prob": 0.5 if self.state["control"] < threshold else 0.2,
+                "decay": base_decay,
+                "reward": 1.0
+            },
+            "communication_attack": {
+                "target": "communication_status",
+                "success_prob": 0.5 if self.state["communication_status"] < threshold else 0.2,
+                "decay": base_decay,
+                "reward": 1.0
+            },
+            "signal_attack": {
+                "target": "signal_strength",
+                "success_prob": 0.5,
+                "decay": 10.0,
+                "reward": 0.8
+            },
+
+            "redundancy_attack": {
+                "target": "redundancy_status",
+                "success_prob": 0.5 if self.state["redundancy_status"] < threshold else 0.2,
+                "decay": base_decay,
+                "reward": 0.8
+            },
+            "data_measurement_attack": {
+                "target": "data_queue_size",
+                "success_prob": 0.8 if self.state["data_queue_size"] > 80 else 0.4,
+                "decay": 15.0,
+                "reward": 1.2
+            },
+            "orbit_decay": {
+                "target": "orbit_deviation",
+                "success_prob": 0.4,
+                "decay": base_decay,
+                "reward": 1.0
+            },
+            "neighbor_trust_attack": {
+                "target": "neighbor_state_trust",
+                "success_prob": 0.5 if self.state["neighbor_state_trust"] < threshold else 0.2,
+                "decay": base_decay,
+                "reward": 0.8
+            }
+        }
+
+
+        if action in attack_params:
+            params = attack_params[action]
+            attack_success = np.random_rand() < params["success_prob"]
+
             if attack_success:
-                self.state["memory"] = max(0.0, self.state["memory"] - 0.2)
-                self.state["under_attack"] = 1.0
-                self.rewards[agent] += 1.0
+                target = params["target"]
+
+                if target in ["radiation_level", "thermal_status", "data_queue_size"]:
+                    self.state[target] = min(self.state[target] + params["decay"], self.observation_spaces[agent][target].high)
+                elif target == "signal_strength":
+                    self.state[target] = max(self.state[target] - params["decay"], self.observation_spaces[agent][target].low)
+                else:
+                    self.state[target] = max(self.state[target] - params["decay"], 0.0)
+
+                self.rewards[agent] += params["reward"]
+
+                self.apply_dependency_cascade(action)
+
 
         return attack_success
 
+    def apply_dependency_cascade(self, attack_type):
 
-    def _update_attacker_strategy(self):
-        """Attackers analyze past attack efficiency and adjust targeting logic."""
-        attack_focus = {}  
-        
-        for attacker in self.agents:
-            if "attacker" in attacker:
-                attack_focus[attacker] = {
-                    "communication_status": 1 - self.state["communication_status"],
-                    "software_health": 1 - self.state["software_health"],
-                    "memory": 1 - self.state["memory"]
-                }
-
-        # Attackers coordinate by prioritizing most vulnerable areas
-        avg_weakness = {
-            key: sum(values[key] for values in attack_focus.values()) / len(attack_focus)
-            for key in attack_focus[list(attack_focus.keys())[0]]
+        root_cascades = {
+            "power_attack": {
+                "control": 0.1,
+                "communication_status": 0.1
+            },
+            "battery_attack": {
+                "power": 0.1
+            },
+            "radiation_attack": {
+                "memory": 0.1,
+                "software_health": 0.1
+            }
         }
 
-        self.attack_priority = max(avg_weakness, key=avg_weakness.get)  # Most exploitable target
+        system_cascades = {
+            "thermal_attack": {
+                "software_health": 0.1,
+                "memory": 0.1
+            },
+            "control_attack": {
+                "orbit_deviation": 0.1,
+                "redundancy_status": 0.1
+            }
+        }
+
+        cascades = root_cascades if attack_type in root_cascades else system_cascades
+
+        if attack_type in cascades:
+            for target, decay in cascades[attack_type].items():
+                self.state[target] = max(self.state[target] - decay, 0.0)
+
 
     def _apply_defense_effects(self, agent, action):
-        """Defenders reinforce weak spots to counter attack threats."""
-        if action == "Increase_shielding":
-            self.state["radiation_level"] = max(0.0, self.state["radiation_level"] - 2.0)
-
-        elif action == "Boost_communication":
-            self.state["communication_status"] = min(1.0, self.state["communication_status"] + 0.1)
-
-        elif action == "Enhance_memory_integrity":
-            self.state["memory"] = min(1.0, self.state["memory"] + 0.1)
+        defense_params = {
+            "power_defense": {
+                "target": "power",
+                "improvement": 0.2,
+                "cost": 0.1,
+                "success_prob": 0.8
+            },
+            "radiation_shield": {
+                "target": "radiation_level",
+                "improvement": -2.0,
+                "cost": 0.15,
+                "success_prob": 0.7
+            },
+            "memory_protection": {
+                "target": "memory",
+                "improvement": 0.15,
+                "cost": 0.1,
+                "success_prob": 0.9
+            },
+            "software_patch": {
+                "target": "software_health",
+                "improvement": 0.2,
+                "cost": 0.1,
+                "success_prob": 0.85
+            },
+            "communication_boost": {
+                "target": "communication_status",
+                "improvement": 0.15,
+                "cost": 0.1,
+                "success_prob": 0.8
+            },
+            "thermal_regulation": {
+                "target": "thermal_status",
+                "improvement": -10.0,
+                "cost": 0.1,
+                "success_prob": 0.9
+            },
+            "orbit_regulation": 
+            
+        }
         
     def _share_risk_alerts(self):
         """Defenders exchange vulnerability information to improve threat anticipation."""
