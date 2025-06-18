@@ -807,13 +807,130 @@ class SatelliteDefenseEnv(AECEnv):
                     self.state[target] = min(1.0, self.state[target] + improvement)
 
 
-    def _compute_reward(self, agent):
-        if "attacker" in agent:
-            return (1 - self.state["software_health"]) * 5  + (1 - self.state["communication_status"]) * 3
-        
-        elif "defender" in agent:
-            return (self.state["software_health"] * 4) + (self.state["communication_status"] * 2) + (1 - self.state["radiation_level"] / 100) * 1
+    def compute_attacker_reward(self, agent):
+        system_weights = {
+            # critical systems
+            "power": 2.0,
+            "software_health": 2.0,
+            "under_attack": 1.5,
 
+            # High priority 
+            "memory": 1.5,
+            "communication_status": 1.5,
+            "control": 1.5,
+
+            # Medium Priority
+            "radiation_level": 1.0,
+            "thermal_status": 1.0,
+            "signal_strength": 1.0,
+            "battery_health": 1.0,
+
+            # Low Priority
+            "orbit_deviation": 0.5,
+            "neighbor_state_trust": 0.5,
+            "data_queue_size": 0.5,
+            "redundancy_status": 0.5
+        }
+
+        attack_success = 0.0
+        total_weight = 0.0
+
+        for system, weight, in system_weights.items():
+            if system in ["radiation_level", "thermal_status", "data_queue_size"]:
+                impact = self.state[system] / self.observation_spaces[agent][system].high
+            elif system == "signal_strength":
+                impact = (self.observation_spaces[agent][system].high - self.state[system]) / \
+                        (self.observation_spaces[agent][system].high - self.observation_spaces[agent][system].low)
+            else:
+                impact = 1.0 - self.state[system]
+
+            attack_success += impact * weight
+            total_weight += weight
+
+        attack_success /= total_weight
+
+        reward = attack_success * 2.0
+
+        if self.state["under_attack"] > 0.5:
+            reward += 0.5
+        if self.state["power"] < 0.4 or self.state["software_health"] < 0.4:
+            reward += 0.5
+
+        if self.state["redundancy_status"] > 0.7:
+            reward *= 0.8
+
+        return np.clip(reward, -2.0, 2.0)
+    
+    def compute_defender_reward(self, agent):
+        system_weights = {
+            # Critical systems
+            "power": 2.0,
+            "software_health": 2.0,
+            "under_attack" : 1.5,
+
+            # High priority systems
+            "memory": 1.5,
+            "communication_status": 1.5,
+            "control": 1.5,
+
+            # Medium priority systems
+            "radiation_level": 1.0,
+            "thermal_status": 1.0,
+            "signal_strength": 1.0,
+            "battery_health": 1.0,
+
+            # Low priority systems
+            "orbit_deviation": 0.5,
+            "neighbor_state_trust": 0.5,
+            "data_queue_size": 0.5,
+            "redundancy_status": 0.5
+
+        }
+
+        system_health = 0.0
+        total_weight = 0.0
+
+        # Calculate system health
+        for system, weight in system_weights.items():
+            if system in  ["radiation_level", "thermal_status", "data_queue_size"]:
+                health = 1.0 - (self.state[system] / self.observation_spaces[agent][system].high)
+            elif system == "signal_strength":
+                health = (self.state[system] - self.observation_spaces[agent][system].low) / \
+                            (self.observation_spaces[agent][system].high - self.observation_spaces[agent][system].low)
+            else:
+                # higher value indicate better health
+                health = self.state[system]
+
+            system_health += health * weight
+            total_weight += weight
+
+        system_health /= total_weight
+
+        # Base reward from system health
+        reward = system_health * 2.0
+
+        if self.state["under_attack"] < 0.2:
+            reward += 0.5
+
+        critical_health = (self.state["power"] + self.state["software_health"] + self.state["control"]) / 3.0
+        reward += critical_health * 0.5
+
+        # penalities and additional bonuses
+        if system_health < 0.3:
+            reward -= 1.0
+        if self.state["redundancy_status"] > 0.7:
+            reward += 0.2
+
+        return np.clip(reward, -2.0, 2.0)
+    
+    def compute_reward(self, agent):
+        if "attacker" in agent:
+            return self.compute_attacker_reward(agent)
+        elif "defender" in agent:
+            return self.compute_defender_reward
+        
+        return 0.0
+        
         
     def _apply_environment_decay(self):
         """Increase deterioration rate for satellites in extreme environments."""
