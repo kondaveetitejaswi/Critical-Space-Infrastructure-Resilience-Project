@@ -64,6 +64,9 @@ class SatelliteDefenseEnv(AECEnv):
         self.dones = {agent: False for agent in self.agents} #tracks if the agent finished acting in the episode``
         self.infos = {agent: {} for agent in self.agents} #holds miscellaneous information for each agent
         self.defender_risk = {agent: {} for agent in self.agents}
+        self.num_steps = 0
+        self.action_history = []
+        self.episode_rewards = {agent: [] for agent in self.agents}
 
     def reset(self, seed=None, options= None):
         #restoring the agents
@@ -150,31 +153,51 @@ class SatelliteDefenseEnv(AECEnv):
             return obs
         
     def step(self, action):
+        "Execute one step in the environment for the current agent"
+        if self.dones[self.agent_selection]:
+            return self.was_done_step(action)
+    
         agent = self.agent_selection
+        self.num_steps += 1
 
-        if agent not in self.agents:
-            return
-        
-        #attack or defense logic
-        self._apply_action(agent, action)
+        previous_state = self.state.copy()
 
-        #Atttackers collaborate and share vulnerability insights
+        #Apply action and get success status
+        action_success = False
         if "attacker" in agent:
-            self._update_attacker_strategy()
+            action_success = self._attacker_action(agent, action)
+            self._apply_attack_decay(agent, action)
+            self.apply_dependency_cascade()
 
-        #defenders collborate to enhance system resilience
         elif "defender" in agent:
+            action_success = self._defender_action(agent, action)
+            self._apply_defense_effects(agent, action)
             self._share_risk_alerts()
-            self._adjust_defense_priorities()
+            self.apply_defense_reinforcement()
 
-        self.rewards[agent] = self._compute_reward(agent)
+        self._apply_environment_decay()
 
-        self._apply_radiation_decay()
+        if "attacker" in agent:
+            self.reards[agent] = self.compute_attacker_reward(agent)
+        else:
+            self.rewards[agent] = self.compute_defender_reward(agent)
+            
+        self.log_action(agent, action, action_success)
+
+        self.infos[agent].update({
+            "action_success": action_success,
+            "state_change": {
+                k: round(self.state[k] - previous_state[k], 3)
+                for k in self.state.keys()
+            },
+            "system_health": {
+                k: round(v, 3) for k, v in self.state.items()
+            }
+        })
 
         self._update_done_status()
-
-        self.agent_selection = self.agent_selector.next()
-    
+        
+        if any 
 
     # MAIN ACTION HANDLING METHODS 
     def _apply_action(self, agent, action):
@@ -933,54 +956,167 @@ class SatelliteDefenseEnv(AECEnv):
         
         
     def _apply_environment_decay(self):
-        """Increase deterioration rate for satellites in extreme environments."""
-        radiation_factor = self.state["radiation_level"] / 100.0  # Normalize radiation impact
-        
-        # Apply accelerated deterioration if radiation is high
-        self.state["battery_health"] = max(0.7, self.state["battery_health"] - np.random.uniform(0.01, 0.05) * (1 + radiation_factor))
-        self.state["control"] = max(0.8, self.state["control"] - np.random.uniform(0.02, 0.06) * (1 + radiation_factor))
-        self.state["neighbor_state_trust"] = max(0.5, self.state["neighbor_state_trust"] - np.random.uniform(0.01, 0.05) * (1 + radiation_factor))
+        decay_rates = {
+            "power": np.random.uniform(0.001, 0.005),
+            "memory": np.random.uniform(0.002, 0.004),
+            "control": np.random.uniform(0.001, 0.003),
+            "software_health": np.random.uniform(0.001, 0.004),
+            "battery_health": np.random_uniform(0.001, 0.003),
+            "communication_status": np.random_uniform(0.001, 0.002),
+            "redundancy_status": np.random.uniform(0.001, 0.003)
+        }
+
+        env_effects = {
+            "radiation_level": np.random.uniform(0.1, 0.3),
+            "thermal_status": np.random.uniform(-2.0, 2.0),
+            "signal_strength": np.random.uniform(-0.5, 0.5),
+            "orbit_deviation": np.random.uniform(0.001, 0.005),
+            "data_queue_size" : np.random.uniform(-1.0, 1.0)
+        }
+
+        for system, rate in decay_rates.items():
+            self.state[system] = max(0.0, min(1.0, self.state[system] - rate))
+
+        for system, effect in env_effects.items():
+            if system == "radiation_level":
+                self.state[system] = min(100.0, max(0.0, self.state[system] + effect))
+            elif system == "thermal_status":
+                self.state[system] = min(200.0, max(-200.0, self.state[system] + effect))
+            elif system == "signal_strength":
+                self.state[system] = min(-50.0, max(-120.0, self.state[system] + effect))
+            elif system == "data_queue_size":
+                self.state[system] = min(100.0, max(0.0, self.state[system] + effect))
+            else:
+                self.state[system] = min(1.0, max(0.0, self.state[system] + effect))
+
+        self.infos["environment_decay"] = {
+            "decay_rates": decay_rates,
+            "environmental_effects": env_effects
+        }
 
 
     def _update_done_status(self):
-        """Checks if the episode should terminate due to extreme system failure."""
-        for agent in self.agents:
-            if self.state["software_health"] < 0.2 or self.state["communication_status"] < 0.2:
-                self.dones[agent] = True  # System breakdown leads to episode termination
+        """ Update episode termination conditions"""
+
+        critical_thresholds = any{
+            "power": 0.1, 
+            "software_health": 0.1,
+            "control": 0.1,
+            "memory": 0.1
+        }
+
+        critical_failure = any(
+            self.state[system] < threshold
+            for system, threshold in critical_thresholds.items()
+
+        )
+
+        environmental_failure = (
+            self.state["radiation_level"] > 95.0 or 
+            abs(self.state["thermal_status"]) > 180.0 or
+            self.state["orbit_deviation"] > 0.9
+        )
+
+        episode_done = critical_failure or environmental_failure
+
+        self.dones = {agent: episode_done for agent in self.agents}
+
+        if episode_done:
+            termination_info = {
+                "critical_failure": critical_failure,
+                "environmental_failure": environmental_failure,
+                "final_state": self.state.copy()
+            }
+            self.infos["termination"] = termination_info
+
 
     def render(self, mode="human"):
         """Displays the current environment state for debugging and tracking."""
-        if mode != "human":
-            return  # Rendering only works in human-readable mode
-        
-        print("\n--- Environment Status ---")
-        print(f"Satellite Power: {self.state['power']:.2f}")
-        print(f"Memory Integrity: {self.state['memory']:.2f}")
-        print(f"Control Stability: {self.state['control']:.2f}")
-        print(f"Software Health: {self.state['software_health']:.2f}")
-        print(f"Radiation Exposure: {self.state['radiation_level']:.2f}")
-        print(f"Under Attack: {self.state['under_attack']}")
-        print(f"Signal Strength: {self.state['signal_strength']:.2f} dBm")
-        print(f"Communication Status: {self.state['communication_status']:.2f}")
-        print(f"Battery Health: {self.state['battery_health']:.2f}")
-        print(f"Thermal Status: {self.state['thermal_status']:.2f}")
-        print(f"Orbit Deviation: {self.state['orbit_deviation']:.2f}")
-        print(f"Neighbor Trust: {self.state['neighbor_state_trust']:.2f}")
-        print(f"Data Queue Size: {self.state['data_queue_size']:.2f} MB")
-        print(f"Redundancy Status: {self.state['redundancy_status']:.2f}")
-        
-        print("\nAgent Status:")
-        for agent in self.agents:
-            print(f"{agent} -> Reward: {self.rewards[agent]:.2f}, Done: {self.dones[agent]}")
+        status_indicators = {
+            "Optimal": "🟢",
+            "Warning": "🟡",
+            "Critical": "🟠"
+        }
+         
+        print("\n 📝 Satellite Defense System Status 📝")
 
-        print("--- End of Render ---\n")
+        # Critical Systems
+        print("Critical Systems:")
+        print(f"Power: {status_indicators['Critical'] if self.state['power'] < 0.3 else status_indicators['Warning'] if self.state['power'] < 0.7 else status_indicators['Optimal']} {self.state['power']:.2f}")
+        print(f"Software: {status_indicators['Critical'] if self.state['software_health'] < 0.3 else status_indicators['Warning'] if self.state['software_health'] < 0.7 else status_indicators['Optimal']} {self.state['software_health']:.2f}")
+        print(f"Control: {status_indicators['Critical'] if self.state['control'] < 0.3 else status_indicators['Warning'] if self.state['control'] < 0.7 else status_indicators['Optimal']} {self.state['control']:.2f}")
+        
+
+        # Environmental Conditions:
+        print("\nEnvironmental Status:")
+        print(f"Radiation: {status_indicators['Critical'] if self.state['radiation_level'] > 80 else status_indicators['Warning'] if self.state['radiation_level'] > 50 else status_indicators['Optimal']} {self.state['radiation_level']:.1f}")
+        print(f"Thermal: {status_indicators['Critical'] if abs(self.state['thermal_status']) > 150 else status_indicators['Warning'] if abs(self.state['thermal_status']) > 100 else status_indicators['Optimal']} {self.state['thermal_status']:.1f}")
+        
+        # Attack Status
+        print(f"\n Attack Status: {'⚠️ Under Attack' if self.state['under_attack'] > 0.5 else '✅ Secure'}")
+
+        # Recent Action
+        if hasattr(self, 'last_action'):
+            print("\nRecent Actions:")
+            print(f"Agent: {self.agent_selection}")
+            print(f"Action: {self.last_action}")
+            print(f"Reward: {self.rewards[self.agent_selection]:.2f}")
+
+            print("\n-------------------------------------------------------")
+
+    def log_action(self, agent, action, success):
+        if not hasattr(self, 'action_history'):
+            self.action_history = []
+
+        action_log = {
+            'step': self.num_steps,
+            'agent': agent,
+            'action': action,
+            'success': success,
+            "reward": self.rewards[agent],
+            'state_change': {
+                k : round(v, 3) for k, v, in self.state.items()
+            }
+        }
+
+        self.action_history.append(action_log)
+        self.last_action = action
+
+    def get_env_report(self):
+        return {
+            "episode_length": self.num_steps,
+            "final_state": self.state.copy(),
+            "cumulative_rewards": {
+                agent: sum(self.rewards[agent])
+                for agent in self.agents
+            },
+            "action_history": self.action_history,
+            "termination_info": self.infos.get("termination", None)
+        }
 
     def close(self):
-        """Handles cleanup for environment shutdown."""
-        print("Closing Satellite Defense Environment...")
-        self.agents = []
-        self.state = None
-        self.rewards = {}
-        self.dones = {}
-        self.infos = {}
-        print("Environment closed successfully.")
+        """Cleanup and FInal Report"""
+        print("\n ------ Final Report -----")
+
+        print("Episode Statistics:")
+        print(f"Total Steps: {self.num_steps}")
+        print(f"Episode Length: {self.num_steps / len(self.agents):.1f} rounds")
+
+        print("\nAgent Performance:")
+        for agent in self.agents:
+            if "attacker" in agent:
+                print(f"{agent}: Total Reward = {sum(self.rewards[agent]):.2f}")
+            else:
+                print(f"{agent}: Total Reward = {sum(self.rewards[agent]):.2f}")
+
+        print("\nFinal System Health:")
+        for systen, value in self.state.items():
+            print(f"{system}: {value:.2f}")
+
+        if "termination" in self.infos:
+            print("\nTermination Reason:")
+            for reason, occured in self.infos["termination"].items():
+                if occured and reason != "final_state":
+                    print(f"-{reason}")
+
+        print("\n=== Report Done Successfully ===")
