@@ -197,8 +197,57 @@ class SatelliteDefenseEnv(AECEnv):
 
         self._update_done_status()
         
-        if any 
+        if any (self.dones.values()):
+            termination_report = {
+                'final_state': self.state.copy(),
+                'episode_length': self.num_steps,
+                'cumulative_rewards': {
+                    a: sum(self.rewards[a]) for a in self.agents
+                },
+                'termination_reason': self.infos.get('termination', {})
+            }
+        self.infos['episode_report'] = termination_report
 
+        self.cumulative_rewards[self.agent_selection] = 0
+        self.agent_selection = self.agent_selector.next()
+
+        self._clear_rewards()
+
+        self._accumulate_rewards()
+
+        if hasattr(self, "render_mode") and self.render_mode == 'human':
+            self.render()
+
+        return self._last()
+    
+    def was_done_step(self, action):
+        if self.dones[self.agent_selection]:
+            return self._last()
+        self.agent_selection = self.agent_selector.next()
+        self._clear_rewards()
+        return self._last()
+    
+    def _last(self):
+        #return the last observation, reward, done, and infor
+        agent = self.agent_selection
+        observation = self.observe(agent)
+        return (
+            observation,
+            self.rewards[agent],
+            self.dones[agent],
+            self.infos[agent]
+        )
+    
+    def _clear_rewards(self):
+        # clear rewards of all the agents except the current one
+        for agent in self.agents:
+            self.rewards[agent] = 0.0
+
+    def _accumulate_rewards(self):
+        # accumulate rewards for the current agent
+        if not hasattr(self, 'cumulative_rewards'):
+            self._cumulative_rewards = {agent: 0 for agent in self.agents}
+        self._cumulative_rewards[self.agent_selection] += self.rewards[self.agent_selection]
     # MAIN ACTION HANDLING METHODS 
     def _apply_action(self, agent, action):
         if "attacker" in agent:
@@ -998,12 +1047,7 @@ class SatelliteDefenseEnv(AECEnv):
     def _update_done_status(self):
         """ Update episode termination conditions"""
 
-        critical_thresholds = any{
-            "power": 0.1, 
-            "software_health": 0.1,
-            "control": 0.1,
-            "memory": 0.1
-        }
+        critical_thresholds = {"power": 0.1, "software_health": 0.1, "control": 0.1, "memory": 0.1}
 
         critical_failure = any(
             self.state[system] < threshold
