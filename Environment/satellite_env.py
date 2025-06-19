@@ -1154,7 +1154,7 @@ class SatelliteDefenseEnv(AECEnv):
                 print(f"{agent}: Total Reward = {sum(self.rewards[agent]):.2f}")
 
         print("\nFinal System Health:")
-        for systen, value in self.state.items():
+        for system, value in self.state.items():
             print(f"{system}: {value:.2f}")
 
         if "termination" in self.infos:
