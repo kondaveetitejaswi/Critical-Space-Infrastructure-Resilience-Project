@@ -37,7 +37,7 @@ class SatelliteDefenseEnv(AECEnv):
                 "control": Box(low=0.0, high=1.0, shape=()), #control system stability
                 "software_health": Box(low=0.0, high=1.0, shape=()), #system integrity post-attacks
                 
-                "raditaion_level": Box(low=0.0, high=100.0, shape=()), #cosmic radiation exposure
+                "radiation_level": Box(low=0.0, high=100.0, shape=()), #cosmic radiation exposure
                 
                 "under_attack": Box(low=0.0, high=1.0, shape=()),    #0: no attack, 1:under attack
 
@@ -47,7 +47,7 @@ class SatelliteDefenseEnv(AECEnv):
                 "battery_health": Box(low=0.0, high=1.0, shape=()), #long-term batter degradation; not just current charge
                 "thermal_status": Box(low =-200.0, high= 200.0, shape =()), #subsystems operating within temperature ranges
                 "orbit_deviation": Box(low=0.0, high=1.0, shape=()), #deviation from intended orbit path
-                "neighbour_state_trust": Box(low=0.0, high=1.0, shape=()), #confidence/trust score on the shared data from neighbouring satellites
+                "neighbor_state_trust": Box(low=0.0, high=1.0, shape=()), #confidence/trust score on the shared data from neighbouring satellites
                 "data_queue_size": Box(low = 0.0, high=100.0, shape=()), #reflects the varying traffic loads-congestion at 90 MB might force data offloading strategies
                 "redundancy_status": Box(low = 0.0, high = 1.0, shape=()) #1: fully redundant, 0: no redundancy
 
@@ -59,7 +59,22 @@ class SatelliteDefenseEnv(AECEnv):
         self.agent_selector = agent_selector(self.agents) #creates a turn based system for agents, acting will be in sequence
         self.agent_selection = self.agent_selector.reset() #Resets the agent selection to the first agent
 
-        self.state = None
+        self.state = {
+            "power": 1.0,
+            "memory": 1.0,
+            "control": 1.0,
+            "software_health": 1.0,
+            "radiation_level": 0.0,
+            "under_attack": 0.0,
+            "signal_strength": -80.0,
+            "communication_status": 1.0,
+            "battery_health": 1.0,
+            "thermal_status": 0.0,
+            "orbit_deviation": 0.0,
+            "neighbor_state_trust": 1.0,
+            "data_queue_size": 10.0,
+            "redundancy_status": 1.0
+        }
         self.rewards = {agent: 0.0 for agent in self.agents} #reward tracking system for each agent
         self.dones = {agent: False for agent in self.agents} #tracks if the agent finished acting in the episode``
         self.infos = {agent: {} for agent in self.agents} #holds miscellaneous information for each agent
@@ -67,6 +82,38 @@ class SatelliteDefenseEnv(AECEnv):
         self.num_steps = 0
         self.action_history = []
         self.episode_rewards = {agent: [] for agent in self.agents}
+
+        # Add new tracking variables
+        self.attack_history = {
+            system: {
+                "last_attack_step": None,
+                "attack_frequency": 0,
+                "successful_attacks": 0,
+                "alert_level": 0.0  # 0-1 scale for system alertness
+            }
+            for system in ["power", "memory", "control", "software_health", 
+                          "communication_status", "battery_health", "signal_strength",
+                          "radiation_level", "thermal_status", "orbit_deviation",
+                          "neighbor_state_trust", "data_queue_size", "redundancy_status"]
+        }
+        
+        self.defender_memory = {
+            agent: {
+                "successful_defenses": [],
+                "failed_defenses": [],
+                "alert_systems": set()
+            }
+            for agent in self.agents if "defender" in agent
+        }
+        
+        self.attacker_memory = {
+            agent: {
+                "successful_attacks": [],
+                "failed_attacks": [],
+                "identified_vulnerabilities": set()
+            }
+            for agent in self.agents if "attacker" in agent
+        }
 
     def reset(self, seed=None, options= None):
         #restoring the agents
@@ -76,27 +123,22 @@ class SatelliteDefenseEnv(AECEnv):
 
         #applying the partial deterioration of the satellite system
         self.state = {
-            "power": max(0.9, self.state.get("power", 1.0) - np.random.uniform(0.01, 0.03)),
-            "memory": max(0.85, self.state.get("memory", 1.0) - np.random.uniform(0.02, 0.04)),
-            "control": max(0.85, self.state.get("control", 1.0) - np.random.uniform(0.02, 0.04)),  
-            "software_health": max(0.85, self.state.get("software_health", 1.0) - np.random.uniform(0.02, 0.04)),  
-        
-            "radiation_level": min(100.0, self.state.get("radiation_level", 0.0) + np.random.uniform(0.5, 1.5)),  
-
+            "power": max(0.9, 1.0 - np.random.uniform(0.01, 0.03)),
+            "memory": max(0.85, 1.0 - np.random.uniform(0.02, 0.04)),
+            "control": max(0.85, 1.0 - np.random.uniform(0.02, 0.04)),
+            "software_health": max(0.85, 1.0 - np.random.uniform(0.02, 0.04)),
+            "radiation_level": min(100.0, np.random.uniform(0.5, 1.5)),
             "under_attack": 0.0,
-
-            "signal_strength": max(-120, min(-50, self.state.get("signal_strength", -80) - np.random.uniform(1, 5))),  
-
-            "communication_status": max(0.95, self.state.get("communication_status", 1.0) - np.random.uniform(0.01, 0.02)),  
-            "battery_health": max(0.9, self.state.get("battery_health", 1.0) - np.random.uniform(0.01, 0.03)),  
-
-            "thermal_status": max(-200, min(200, self.state.get("thermal_status", 0.0) + np.random.uniform(-5, 5))),  
-            "orbit_deviation": min(5.0, self.state.get("orbit_deviation", 0.0) + np.random.uniform(0.02, 0.08)),  
-            "neighbor_state_trust": max(0.5, self.state.get("neighbor_state_trust", 1.0) - np.random.uniform(0.01, 0.05)),  
-            "data_queue_size": max(0, min(100, self.state.get("data_queue_size", 10.0) + np.random.uniform(-5, 5))),  
-            "redundancy_status": max(0.6, self.state.get("redundancy_status", 1.0) - np.random.uniform(0.01, 0.03)),  
-        
+            "signal_strength": max(-120, min(-50, -80 - np.random.uniform(1, 5))),
+            "communication_status": max(0.95, 1.0 - np.random.uniform(0.01, 0.02)),
+            "battery_health": max(0.9, 1.0 - np.random.uniform(0.01, 0.03)),
+            "thermal_status": max(-200, min(200, np.random.uniform(-5, 5))),
+            "orbit_deviation": min(5.0, np.random.uniform(0.02, 0.08)),
+            "neighbor_state_trust": max(0.5, 1.0 - np.random.uniform(0.01, 0.05)),
+            "data_queue_size": max(0, min(100, 10.0 + np.random.uniform(-5, 5))),
+            "redundancy_status": max(0.6, 1.0 - np.random.uniform(0.01, 0.03))
         }
+
         
         self._apply_environment_decay()
 
@@ -104,6 +146,10 @@ class SatelliteDefenseEnv(AECEnv):
         self.dones = {agent: False for agent in self.agents}
         self.infos = {agent: {} for agent in self.agents}
         self.defender_risk = {agent: {} for agent in self.agents}
+
+        self.num_steps = 0
+
+        return self.observe(self.agent_selection)
 
 
     def observe(self, agent): #fully observable environment
@@ -132,6 +178,23 @@ class SatelliteDefenseEnv(AECEnv):
                                                                         # says "Backup computer OK" when it’s actually failed, the on-board supervisor may switch to a dead unit when the primary fails → total system loss.
                 }
 
+                # Add vulnerability analysis
+                vulnerabilities = {
+                    system: {
+                        "current_value": self.state[system],
+                        "success_rate": (self.attack_history[system]["successful_attacks"] / 
+                                       max(1, self.attack_history[system]["attack_frequency"])),
+                        "alert_level": self.attack_history[system]["alert_level"]
+                    }
+                    for system in self.attack_history
+                }
+                
+                obs.update({
+                    "vulnerability_analysis": vulnerabilities,
+                    "previous_successes": self.attacker_memory[agent]["successful_attacks"][-5:],
+                    "identified_weaknesses": list(self.attacker_memory[agent]["identified_vulnerabilities"])
+                })
+
             elif "defender" in agent:
                 obs = {
                     "power": self.state["power"],
@@ -150,40 +213,79 @@ class SatelliteDefenseEnv(AECEnv):
                     "redundancy_status": self.state["redundancy_status"]
                 }
 
+                # Add defense history and alerts
+                alerts = {
+                    system: {
+                        "alert_level": self.attack_history[system]["alert_level"],
+                        "last_attack": self.attack_history[system]["last_attack_step"],
+                        "attack_frequency": self.attack_history[system]["attack_frequency"]
+                    }
+                    for system in self.attack_history
+                }
+                
+                obs.update({
+                    "system_alerts": alerts,
+                    "defense_history": {
+                        "recent_successes": self.defender_memory[agent]["successful_defenses"][-5:],
+                        "high_risk_systems": list(self.defender_memory[agent]["alert_systems"])
+                    }
+                })
+
             return obs
         
+
     def step(self, action):
-        "Execute one step in the environment for the current agent"
+        print(f"Step action: {action}, type: {type(action)}")
+        if not isinstance(action, np.ndarray):
+            raise ValueError(f"Action must be numpy array, got {type(action)}")
         if self.dones[self.agent_selection]:
             return self.was_done_step(action)
-    
+            
         agent = self.agent_selection
         self.num_steps += 1
-
         previous_state = self.state.copy()
 
-        #Apply action and get success status
+        # --- Advanced features integration ---
+        self._validate_observation_spaces()
+        self._validate_system_dependencies()
+        self._enforce_state_bounds()
+        self._update_performance_metrics()
+        self._coordinate_defense_strategy()
+        self.analyze_attack_patterns()
+        # -------------------------------------
+
+        # Apply action based on agent type
         action_success = False
         if "attacker" in agent:
+            # Select target based on history and current vulnerabilities
+            target_system = self._select_attack_target(agent)
             action_success = self._attacker_action(agent, action)
-            self._apply_attack_decay(agent, action)
-            self.apply_dependency_cascade()
-
-        elif "defender" in agent:
-            action_success = self._defender_action(agent, action)
-            self._apply_defense_effects(agent, action)
-            self._share_risk_alerts()
-            self.apply_defense_reinforcement()
-
-        self._apply_environment_decay()
-
-        if "attacker" in agent:
-            self.reards[agent] = self.compute_attacker_reward(agent)
+            self._update_attack_history(agent, target_system, action_success)
+            self.apply_dependency_cascade(target_system)
         else:
-            self.rewards[agent] = self.compute_defender_reward(agent)
-            
+            # Select defense based on alerts and history
+            defense_target = self._select_defense_target(agent)
+            action_success = self._defender_action(agent, action)
+            self.apply_defense_reinforcement(defense_target)
+        
+        # Decay alert levels over time
+        self._decay_alert_levels()
+        
+        self._apply_environment_decay()
+        
+        # Calculate rewards
+        if "attacker" in agent:
+            reward = self.compute_attacker_reward(agent)
+        else:
+            reward = self.compute_defender_reward(agent)
+
+        # Log action
         self.log_action(agent, action, action_success)
 
+        self.rewards[agent] = reward
+
+        
+        # Update info
         self.infos[agent].update({
             "action_success": action_success,
             "state_change": {
@@ -194,32 +296,68 @@ class SatelliteDefenseEnv(AECEnv):
                 k: round(v, 3) for k, v in self.state.items()
             }
         })
-
+        
         self._update_done_status()
         
-        if any (self.dones.values()):
-            termination_report = {
-                'final_state': self.state.copy(),
-                'episode_length': self.num_steps,
-                'cumulative_rewards': {
-                    a: sum(self.rewards[a]) for a in self.agents
-                },
-                'termination_reason': self.infos.get('termination', {})
-            }
-        self.infos['episode_report'] = termination_report
-
-        self.cumulative_rewards[self.agent_selection] = 0
+        # Handle episode termination
+        if any(self.dones.values()):
+            self._handle_episode_end()
+            
+        # Update agent selection
         self.agent_selection = self.agent_selector.next()
-
+     
+        
+        # Accumulate rewards
+        if not hasattr(self, 'cumulative_rewards'):
+            self.cumulative_rewards = {agent: 0.0 for agent in self.agents}
+        self.cumulative_rewards[agent] += reward
+        
         self._clear_rewards()
-
-        self._accumulate_rewards()
 
         if hasattr(self, "render_mode") and self.render_mode == 'human':
             self.render()
-
+            
         return self._last()
     
+    def _update_attack_history(self, agent, target_system, success):
+        """Update attack history and alert levels"""
+        self.attack_history[target_system]["last_attack_step"] = self.num_steps
+        self.attack_history[target_system]["attack_frequency"] += 1
+        
+        if success:
+            self.attack_history[target_system]["successful_attacks"] += 1
+            self.attacker_memory[agent]["successful_attacks"].append({
+                "step": self.num_steps,
+                "system": target_system,
+                "state": self.state[target_system]
+            })
+            self.attacker_memory[agent]["identified_vulnerabilities"].add(target_system)
+            
+            # Increase alert level for this and related systems
+            self._raise_system_alerts(target_system)
+        else:
+            self.attacker_memory[agent]["failed_attacks"].append({
+                "step": self.num_steps,
+                "system": target_system
+            })
+    def _decay_alert_levels(self):
+        """
+        Gradually reduce alert levels for all systems each step.
+        """
+        decay_rate = 0.05  # Decay 5% per step
+        for system in self.attack_history:
+            self.attack_history[system]["alert_level"] = max(
+                0.0, self.attack_history[system]["alert_level"] - decay_rate
+            )
+    def _validate_observation_spaces(self):
+        """Validate and fix observation space definitions"""
+        for agent in self.agents:
+            obs_space = self.observation_spaces[agent]
+            
+            # Fix the typo: 'raditaion_level' -> 'radiation_level'
+            if 'raditaion_level' in obs_space.spaces:
+                obs_space.spaces['radiation_level'] = obs_space.spaces.pop('raditaion_level')
+                
     def was_done_step(self, action):
         if self.dones[self.agent_selection]:
             return self._last()
@@ -227,6 +365,43 @@ class SatelliteDefenseEnv(AECEnv):
         self._clear_rewards()
         return self._last()
     
+    def _select_defense_target(self, agent):
+        """Helper method to select defense target based on system state"""
+        obs = self.observe(agent)
+        priorities = [
+            ("power", obs["power"]),
+            ("software_health", obs["software_health"]), 
+            ("control", obs["control"]),
+            ("memory", obs["memory"]),
+            ("communication_status", obs["communication_status"]),
+            ("battery_health", obs["battery_health"])
+        ]
+        
+        # Select system with lowest health as defense target
+        return min(priorities, key=lambda x: x[1])[0]
+    
+    def _select_attack_target(self, agent):
+        """
+        Select the most vulnerable system for the attacker based on:
+        - Highest vulnerability (lowest value or highest alert)
+        - Past attack success
+        """
+        obs = self.observe(agent)
+        vulnerabilities = {
+            system: 1 - obs[system] if system in obs else 0
+            for system in [
+                "power", "memory", "control", "software_health", "communication_status",
+                "battery_health", "signal_strength", "radiation_level", "thermal_status",
+                "orbit_deviation", "neighbor_state_trust", "data_queue_size", "redundancy_status"
+            ]
+        }
+        # Weight by alert level (more alert = more likely to be defended, so less attractive)
+        for system in vulnerabilities:
+            alert = self.attack_history[system]["alert_level"]
+            vulnerabilities[system] *= (1 - 0.5 * alert)
+        # Pick the system with the highest vulnerability score
+        return max(vulnerabilities.items(), key=lambda x: x[1])[0]
+
     def _last(self):
         #return the last observation, reward, done, and infor
         agent = self.agent_selection
@@ -246,8 +421,8 @@ class SatelliteDefenseEnv(AECEnv):
     def _accumulate_rewards(self):
         # accumulate rewards for the current agent
         if not hasattr(self, 'cumulative_rewards'):
-            self._cumulative_rewards = {agent: 0 for agent in self.agents}
-        self._cumulative_rewards[self.agent_selection] += self.rewards[self.agent_selection]
+            self.cumulative_rewards = {agent: 0 for agent in self.agents}
+        self.cumulative_rewards[self.agent_selection] += self.rewards[self.agent_selection]
     # MAIN ACTION HANDLING METHODS 
     def _apply_action(self, agent, action):
         if "attacker" in agent:
@@ -324,7 +499,7 @@ class SatelliteDefenseEnv(AECEnv):
 
 
     def _defender_action(self, agent, action):
-        defense_strength = action[0] 
+        defense_strength = float(action[0])
 
         obs = self.observe(agent)
 
@@ -336,7 +511,7 @@ class SatelliteDefenseEnv(AECEnv):
         redundancy_related = ["redundancy_status"]
         data_related = ["data_queue_size"]
         orbit_related = ["orbit_deviation"]
-        trust_related = ["neighbor_state_trust"]
+        trust_related = ["neighbor_trust"]
 
         dependency_chain = [
             roots,
@@ -392,6 +567,7 @@ class SatelliteDefenseEnv(AECEnv):
 
         # Mark that an active defense was done
         self.state["under_attack"] = 0.0  #  reset if defender countered an attack
+        self._apply_defense_effects(agent, action, defense_target)
 
 
     def _apply_attack_decay(self, agent, action):
@@ -488,7 +664,7 @@ class SatelliteDefenseEnv(AECEnv):
 
         if action in attack_params:
             params = attack_params[action]
-            attack_success = np.random_rand() < params["success_prob"]
+            attack_success = np.random.rand() < params["success_prob"]
 
             if attack_success:
                 target = params["target"]
@@ -541,119 +717,104 @@ class SatelliteDefenseEnv(AECEnv):
                 self.state[target] = max(self.state[target] - decay, 0.0)
 
 
-    def _apply_defense_effects(self, agent, action):
+    def _apply_defense_effects(self, agent, action, defense_target):
+        action_value = float(action[0])  # Now this will work
+        
         defense_params = {
-            "power_defense": {
-                "target": "power",
-                "improvement": 0.2,
+            "power": {
+                "improvement": 0.2 * action_value,
                 "cost": 0.1,
                 "success_prob": 0.8
             },
-            "battery_protection": {
-                "target": "battery_health",
-                "improvement": 0.2,
+            "battery_health": {
+                "improvement": 0.2 * action_value,
                 "cost": 0.1,
                 "success_prob": 0.8
             },
-            "radiation_shield": {
-                "target": "radiation_level",
+            "radiation_level": {
                 "improvement": -2.0,
                 "cost": 0.15,
                 "success_prob": 0.7
             },
-            "memory_protection": {
-                "target": "memory",
+            "memory": {
                 "improvement": 0.15,
                 "cost": 0.1,
                 "success_prob": 0.9
             },
-            "software_patch": {
-                "target": "software_health",
+            "software_health": {
                 "improvement": 0.2,
                 "cost": 0.1,
                 "success_prob": 0.85
             },
-            "communication_boost": {
-                "target": "communication_status",
+            "communication_status": {
                 "improvement": 0.15,
                 "cost": 0.1,
                 "success_prob": 0.8
             },
-            "signal_boost": {
-                "target": "signal_strength",
+            "signal_strength": {
                 "improvement": 5.0,
                 "cost": 0.1,
                 "success_prob": 0.75
             },
-            "thermal_regulation": {
-                "target": "thermal_status",
+            "thermal_status": {
                 "improvement": -10.0,
                 "cost": 0.1,
                 "success_prob": 0.9
             },
-            "control_system_protection":{
-                "target": "control",
+            "control": {
                 "improvement": 0.2,
                 "cost": 0.15,
                 "success_prob": 0.8
             },
-            "orbit_correction": {
-                "target": "orbit_deviation",
+            "orbit_deviation": {
                 "improvement": -0.1,
                 "cost": 0.2,
                 "success_prob": 0.7
             },
-
-            "trust_verification": {
-                "target": "neighbor_state_trust",
+            "neighbor_state_trust": {
                 "improvement": 0.15,
                 "cost": 0.05,
                 "success_prob": 0.9
             },
-            "queue_management": {
-                "target": "data_queue_size",
+            "data_queue_size": {
                 "improvement": -10.0,
                 "cost": 0.1,
                 "success_prob": 0.8
             },
-            "redundancy_boost": {
-                "target": "redundancy_status",
+            "redundancy_status": {
                 "improvement": 0.2,
                 "cost": 0.15,
                 "success_prob": 0.85
-            },
-
-            "emergency_reboot": {
-                "target": "under_attack",
-                "improvement": -1.0,
-                "cost": 0.3,
-                "success_prob": 0.6
             }
-            
         }
 
-        if action in defense_params:
-            params = defense_params[action]
+        defense_target = self._select_defense_target(agent)
+        
+        if defense_target in defense_params:
+            params = defense_params[defense_target]
             success = np.random.rand() < params["success_prob"]
-
+            
             if success:
-                target = params["target"]
                 improvement = params["improvement"]
-
-                if target in ["radiation_level", "thermal_status", "data_queue_size"]:
-                    self.state[target] = max(
-                        self.observation_spaces[agent][target].low,
-                        min(self.state[target] + improvement, self.observation_spaces[agent][target].high)
+                
+                if defense_target in ["radiation_level", "thermal_status", "data_queue_size"]:
+                    self.state[defense_target] = max(
+                        self.observation_spaces[agent][defense_target].low,
+                        min(self.state[defense_target] + improvement, 
+                            self.observation_spaces[agent][defense_target].high)
                     )
-
+                elif defense_target == "signal_strength":
+                    self.state[defense_target] = min(-50.0, 
+                        max(-120.0, self.state[defense_target] + improvement))
                 else:
-                    self.state[target] = max(0.0, min(1.0, self.state[target] + improvement))
-
+                    self.state[defense_target] = max(0.0, 
+                        min(1.0, self.state[defense_target] + improvement))
+                    
                 self.rewards[agent] += 1.0
                 self.state["under_attack"] = max(0.0, self.state["under_attack"] - 0.2)
-
-
-                self.apply_defense_reinforcement(action)
+                
+                self.apply_defense_reinforcement(defense_target)
+                
             return success
         return False
         
@@ -744,7 +905,7 @@ class SatelliteDefenseEnv(AECEnv):
             "low": ["orbit_deviation", "neighbor_state_trust", "data_queue_size", "redundancy_status"]
         }
 
-        threats = {priority: [] for priority in priority_groups.key()}
+        threats = {priority: [] for priority in priority_groups.keys()}
 
         for priority, systems in priority_groups.items():
             for system in systems:
@@ -930,7 +1091,7 @@ class SatelliteDefenseEnv(AECEnv):
 
         if self.state["redundancy_status"] > 0.7:
             reward *= 0.8
-
+        print(f"[DEBUG] Attacker {agent} reward: {reward}, state: {self.state}")
         return np.clip(reward, -2.0, 2.0)
     
     def compute_defender_reward(self, agent):
@@ -992,7 +1153,7 @@ class SatelliteDefenseEnv(AECEnv):
             reward -= 1.0
         if self.state["redundancy_status"] > 0.7:
             reward += 0.2
-
+        print(f"[DEBUG] Defender {agent} reward: {reward}, state: {self.state}")
         return np.clip(reward, -2.0, 2.0)
     
     def compute_reward(self, agent):
@@ -1010,8 +1171,8 @@ class SatelliteDefenseEnv(AECEnv):
             "memory": np.random.uniform(0.002, 0.004),
             "control": np.random.uniform(0.001, 0.003),
             "software_health": np.random.uniform(0.001, 0.004),
-            "battery_health": np.random_uniform(0.001, 0.003),
-            "communication_status": np.random_uniform(0.001, 0.002),
+            "battery_health": np.random.uniform(0.001, 0.003),
+            "communication_status": np.random.uniform(0.001, 0.002),
             "redundancy_status": np.random.uniform(0.001, 0.003)
         }
 
@@ -1084,27 +1245,31 @@ class SatelliteDefenseEnv(AECEnv):
          
         print("\n 📝 Satellite Defense System Status 📝")
 
-        # Critical Systems
+        #Critical Systems
         print("Critical Systems:")
         print(f"Power: {status_indicators['Critical'] if self.state['power'] < 0.3 else status_indicators['Warning'] if self.state['power'] < 0.7 else status_indicators['Optimal']} {self.state['power']:.2f}")
         print(f"Software: {status_indicators['Critical'] if self.state['software_health'] < 0.3 else status_indicators['Warning'] if self.state['software_health'] < 0.7 else status_indicators['Optimal']} {self.state['software_health']:.2f}")
         print(f"Control: {status_indicators['Critical'] if self.state['control'] < 0.3 else status_indicators['Warning'] if self.state['control'] < 0.7 else status_indicators['Optimal']} {self.state['control']:.2f}")
         
 
-        # Environmental Conditions:
+        #Environmental Conditions:
         print("\nEnvironmental Status:")
         print(f"Radiation: {status_indicators['Critical'] if self.state['radiation_level'] > 80 else status_indicators['Warning'] if self.state['radiation_level'] > 50 else status_indicators['Optimal']} {self.state['radiation_level']:.1f}")
         print(f"Thermal: {status_indicators['Critical'] if abs(self.state['thermal_status']) > 150 else status_indicators['Warning'] if abs(self.state['thermal_status']) > 100 else status_indicators['Optimal']} {self.state['thermal_status']:.1f}")
         
-        # Attack Status
+        #Attack Status
         print(f"\n Attack Status: {'⚠️ Under Attack' if self.state['under_attack'] > 0.5 else '✅ Secure'}")
 
-        # Recent Action
+        #Recent Action
         if hasattr(self, 'last_action'):
             print("\nRecent Actions:")
             print(f"Agent: {self.agent_selection}")
             print(f"Action: {self.last_action}")
-            print(f"Reward: {self.rewards[self.agent_selection]:.2f}")
+            # Print the cumulative reward for the current agent
+            if hasattr(self, 'cumulative_rewards'):
+                print(f"Reward: {self.cumulative_rewards.get(self.agent_selection, 0.0):.2f}")
+            else:
+                print(f"Reward: {self.rewards[self.agent_selection]:.2f}")
 
             print("\n-------------------------------------------------------")
 
@@ -1131,15 +1296,41 @@ class SatelliteDefenseEnv(AECEnv):
             "episode_length": self.num_steps,
             "final_state": self.state.copy(),
             "cumulative_rewards": {
-                agent: sum(self.rewards[agent])
+                agent: self.cumulative_rewards.get(agent, 0.0)
                 for agent in self.agents
             },
             "action_history": self.action_history,
             "termination_info": self.infos.get("termination", None)
         }
 
+    # Add PettingZoo API properties for compliance
+    @property
+    def observation_space(self):
+        return self.observation_spaces[self.agents[0]]
+
+    @property
+    def action_space(self):
+        return self.action_spaces[self.agents[0]]
+
+    # Implement missing episode end handler
+    def _handle_episode_end(self):
+        """
+        Finalize logs, print reports, and clean up at episode end.
+        """
+        print("\n--- Episode Ended ---")
+        print(f"Total Steps: {self.num_steps}")
+        print("Final State:")
+        for k, v in self.state.items():
+            print(f"  {k}: {v:.3f}")
+        print("Cumulative Rewards:")
+        for agent in self.agents:
+            print(f"  {agent}: {self.cumulative_rewards.get(agent, 0):.2f}")
+        if "termination" in self.infos:
+            print("Termination Info:", self.infos["termination"])
+        print("\n EPISODE END")
+    # Fix reward reporting in close() to use cumulative_rewards
     def close(self):
-        """Cleanup and FInal Report"""
+        """Cleanup and Final Report"""
         print("\n ------ Final Report -----")
 
         print("Episode Statistics:")
@@ -1148,10 +1339,7 @@ class SatelliteDefenseEnv(AECEnv):
 
         print("\nAgent Performance:")
         for agent in self.agents:
-            if "attacker" in agent:
-                print(f"{agent}: Total Reward = {sum(self.rewards[agent]):.2f}")
-            else:
-                print(f"{agent}: Total Reward = {sum(self.rewards[agent]):.2f}")
+            print(f"{agent}: Total Reward = {self.cumulative_rewards.get(agent, 0.0):.2f}")
 
         print("\nFinal System Health:")
         for system, value in self.state.items():
@@ -1164,3 +1352,270 @@ class SatelliteDefenseEnv(AECEnv):
                     print(f"-{reason}")
 
         print("\n=== Report Done Successfully ===")
+
+    def _validate_system_dependencies(self):
+        """Validate system states don't violate physical constraints"""
+        constraints_violated = []
+        
+        # Power constraints: if power is very low, other systems should be affected
+        if self.state["power"] < 0.2:
+            # Communication should be impacted
+            if self.state["communication_status"] > 0.6:
+                self.state["communication_status"] *= 0.8
+                constraints_violated.append("power_communication_dependency")
+            
+            # Control systems should be impacted
+            if self.state["control"] > 0.5:
+                self.state["control"] *= 0.9
+                constraints_violated.append("power_control_dependency")
+        
+        # Thermal constraints: extreme temperatures affect electronics
+        if abs(self.state["thermal_status"]) > 150:
+            degradation_factor = 0.98
+            self.state["memory"] *= degradation_factor
+            self.state["software_health"] *= degradation_factor
+            constraints_violated.append("thermal_electronics_dependency")
+        
+        # Radiation constraints: high radiation affects memory and software
+        if self.state["radiation_level"] > 80:
+            radiation_factor = 0.99
+            self.state["memory"] *= radiation_factor
+            self.state["software_health"] *= radiation_factor
+            constraints_violated.append("radiation_electronics_dependency")
+        
+        # Communication constraints: poor signal affects trust
+        if self.state["signal_strength"] < -100:
+            self.state["neighbor_state_trust"] *= 0.95
+            constraints_violated.append("signal_trust_dependency")
+        
+        # Data queue constraints: full queue affects performance
+        if self.state["data_queue_size"] > 90:
+            self.state["software_health"] *= 0.98
+            self.state["memory"] *= 0.99
+            constraints_violated.append("queue_performance_dependency")
+        
+        return constraints_violated
+
+
+    def _enforce_state_bounds(self):
+        """Ensure all state values remain within valid bounds"""
+        bounds = {
+            "power": (0.0, 1.0),
+            "memory": (0.0, 1.0),
+            "control": (0.0, 1.0),
+            "software_health": (0.0, 1.0),
+            "radiation_level": (0.0, 100.0),
+            "under_attack": (0.0, 1.0),
+            "signal_strength": (-120.0, -50.0),
+            "communication_status": (0.0, 1.0),
+            "battery_health": (0.0, 1.0),
+            "thermal_status": (-200.0, 200.0),
+            "orbit_deviation": (0.0, 1.0),
+            "neighbor_state_trust": (0.0, 1.0),
+            "data_queue_size": (0.0, 100.0),
+            "redundancy_status": (0.0, 1.0)
+        }
+        
+        for key, (min_val, max_val) in bounds.items():
+            if key in self.state:
+                self.state[key] = np.clip(self.state[key], min_val, max_val)
+
+    # 5. Performance metrics tracking
+    def _update_performance_metrics(self):
+        """Track performance metrics for analysis"""
+        if not hasattr(self, 'performance_metrics'):
+            self.performance_metrics = {
+                'system_health_history': [],
+                'attack_frequency_history': [],
+                'defense_effectiveness_history': [],
+                'critical_events': []
+            }
+        
+        # System health snapshot
+        current_health = {
+            'critical_avg': np.mean([
+                self.state["power"], 
+                self.state["software_health"], 
+                self.state["control"]
+            ]),
+            'overall_avg': np.mean([
+                v for k, v in self.state.items() 
+                if k not in ["radiation_level", "thermal_status", "under_attack", 
+                            "signal_strength", "orbit_deviation", "data_queue_size"]
+            ]),
+            'step': self.num_steps
+        }
+        self.performance_metrics['system_health_history'].append(current_health)
+        
+        # Track critical events
+        if current_health['critical_avg'] < 0.3:
+            self.performance_metrics['critical_events'].append({
+                'type': 'critical_systems_low',
+                'step': self.num_steps,
+                'severity': 1.0 - current_health['critical_avg']
+            })
+        
+        if self.state["radiation_level"] > 90:
+            self.performance_metrics['critical_events'].append({
+                'type': 'radiation_critical',
+                'step': self.num_steps,
+                'value': self.state["radiation_level"]
+            })
+
+    # 6. Agent coordination for defenders
+    def _coordinate_defense_strategy(self):
+        """Coordinate defense strategy among defender agents"""
+        if not hasattr(self, 'defense_coordination'):
+            self.defense_coordination = {
+                'priority_assignments': {},
+                'coordination_bonus': 0.0,
+                'last_coordination_step': 0
+            }
+        
+        # Identify systems needing defense
+        vulnerable_systems = []
+        for system, value in self.state.items():
+            if system in ["power", "software_health", "control", "memory", 
+                        "communication_status", "battery_health", "redundancy_status"]:
+                if value < 0.6:
+                    vulnerability = 1.0 - value
+                    vulnerable_systems.append((system, vulnerability))
+        
+        # Sort by vulnerability
+        vulnerable_systems.sort(key=lambda x: x[1], reverse=True)
+        
+        # Assign priorities to defenders
+        defender_agents = [agent for agent in self.agents if "defender" in agent]
+        
+        for i, agent in enumerate(defender_agents):
+            if i < len(vulnerable_systems):
+                assigned_system = vulnerable_systems[i][0]
+                self.defense_coordination['priority_assignments'][agent] = assigned_system
+            else:
+                # Assign to most critical system if no unique assignment
+                if vulnerable_systems:
+                    self.defense_coordination['priority_assignments'][agent] = vulnerable_systems[0][0]
+        
+        # Calculate coordination bonus
+        if len(set(self.defense_coordination['priority_assignments'].values())) == len(vulnerable_systems):
+            self.defense_coordination['coordination_bonus'] = 0.1  # Good coordination
+        else:
+            self.defense_coordination['coordination_bonus'] = 0.0
+        
+        self.defense_coordination['last_coordination_step'] = self.num_steps
+
+    def analyze_attack_patterns(self):
+        """Analyze attack patterns for strategic insights"""
+        if not hasattr(self, 'attack_analysis'):
+            self.attack_analysis = {
+                'pattern_detection': {},
+                'threat_prediction': {},
+                'adaptation_counter': 0
+            }
+        
+        # Analyze recent attack history
+        recent_attacks = []
+        for system, history in self.attack_history.items():
+            if history['last_attack_step'] is not None:
+                steps_ago = self.num_steps - history['last_attack_step']
+                if steps_ago <= 10:  # Recent attacks
+                    recent_attacks.append({
+                        'system': system,
+                        'steps_ago': steps_ago,
+                        'frequency': history['attack_frequency'],
+                        'success_rate': history['successful_attacks'] / max(1, history['attack_frequency'])
+                    })
+        
+        # Detect patterns
+        if len(recent_attacks) >= 3:
+            # Sort by recency
+            recent_attacks.sort(key=lambda x: x['steps_ago'])
+            
+            # Check for escalation pattern
+            systems_attacked = [attack['system'] for attack in recent_attacks[-3:]]
+            
+            if len(set(systems_attacked)) == 1:
+                # Focused attack detected
+                target_system = systems_attacked[0]
+                self.attack_analysis['pattern_detection']['focused_attack'] = {
+                    'target': target_system,
+                    'intensity': len([a for a in recent_attacks if a['system'] == target_system]),
+                    'detected_step': self.num_steps
+                }
+            
+            # Check for distributed attack pattern
+            if len(set(systems_attacked)) == len(systems_attacked):
+                self.attack_analysis['pattern_detection']['distributed_attack'] = {
+                    'targets': systems_attacked,
+                    'detected_step': self.num_steps
+                }
+        
+        # Predict next likely targets
+        threat_scores = {}
+        for system, history in self.attack_history.items():
+            # Base threat on success rate and alert level
+            if history['attack_frequency'] > 0:
+                success_rate = history['successful_attacks'] / history['attack_frequency']
+                
+                recency_factor = 1.0
+                if history['last_attack_step'] is not None:
+                    steps_since = self.num_steps - history['last_attack_step']
+                    recency_factor = max(0.1, 1.0 - (steps_since / 20.0))
+                
+                threat_scores[system] = success_rate * recency_factor * (1.0 - history['alert_level'])
+        
+        # Store top 3 predicted targets
+        if threat_scores:
+            sorted_threats = sorted(threat_scores.items(), key=lambda x: x[1], reverse=True)
+            self.attack_analysis['threat_prediction']['top_targets'] = sorted_threats[:3]
+            self.attack_analysis['threat_prediction']['updated_step'] = self.num_steps
+        
+        # Analyze attack timing patterns
+        attack_intervals = []
+        for system, history in self.attack_history.items():
+            if len(history.get('attack_timestamps', [])) >= 2:
+                timestamps = history['attack_timestamps']
+                intervals = [timestamps[i] - timestamps[i-1] for i in range(1, len(timestamps))]
+                attack_intervals.extend(intervals)
+        
+        if attack_intervals:
+            avg_interval = sum(attack_intervals) / len(attack_intervals)
+            self.attack_analysis['pattern_detection']['timing_pattern'] = {
+                'average_interval': avg_interval,
+                'last_calculated': self.num_steps,
+                'sample_size': len(attack_intervals)
+            }
+        
+        # Detect adaptation behavior
+        if hasattr(self, 'defense_changes') and self.defense_changes:
+            recent_defense_changes = [
+                change for change in self.defense_changes 
+                if self.num_steps - change.get('step', 0) <= 5
+            ]
+            
+            if recent_defense_changes:
+                self.attack_analysis['adaptation_counter'] += 1
+                self.attack_analysis['pattern_detection']['adaptation_detected'] = {
+                    'counter': self.attack_analysis['adaptation_counter'],
+                    'recent_changes': len(recent_defense_changes),
+                    'detected_step': self.num_steps
+                }
+        
+        # Calculate overall threat level
+        if threat_scores:
+            max_threat = max(threat_scores.values())
+            avg_threat = sum(threat_scores.values()) / len(threat_scores)
+            
+            overall_threat_level = "LOW"
+            if max_threat > 0.7:
+                overall_threat_level = "CRITICAL"
+            elif max_threat > 0.5:
+                overall_threat_level = "HIGH"
+            elif avg_threat > 0.3:
+                overall_threat_level = "MEDIUM"
+            
+            self.attack_analysis['threat_prediction']['overall_level'] = overall_threat_level
+            self.attack_analysis['threat_prediction']['max_score'] = max_threat
+            self.attack_analysis['threat_prediction']['avg_score'] = avg_threat
+        
+        return self.attack_analysis

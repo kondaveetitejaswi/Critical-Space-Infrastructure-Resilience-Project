@@ -1,22 +1,38 @@
 from satellite_env import SatelliteDefenseEnv
 import numpy as np
 
-env  = SatelliteDefenseEnv()
-env.reset()
+def test_satellite_defense_env():
+    env = SatelliteDefenseEnv()
+    episode_count = 0
+    max_episodes = 1
 
-for agent in env.agent_iter():
-    obs = env.observe(agent)
-    act_space = env.action_space(agent)
-    action = act_space.sample()  # Sample a random action from the action space
-    reward, done, info = env.step(action)
-    env.render()
-    if done:
-        env.reset()  # Reset the environment if done
-        print(f"Agent {agent} has finished its episode.")
-    else:
-        print(f"Agent {agent} took action {action}, received reward {reward}, and is {'done' if done else 'not done'}.")
+    print("\n --------Starting Satellite Defense Environment Test ----------\n")
 
-env.close()  # Close the environment when done
-print("Environment closed.")
+    while episode_count < max_episodes:
+        env.reset(seed=42)
+        done = False
 
+        for agent in env.agent_iter():
+            obs = env.observe(agent)
+            if obs is None:
+                continue
 
+            action = np.array([np.random.uniform(0, 1)], dtype=np.float32)
+            env.step(action)
+
+            env.render()
+
+            if any(env.dones.values()):
+                report = env.get_env_report()
+                print("\n✅ Cumulative Rewards (from env):")
+                for agent, total_reward in report["cumulative_rewards"].items():
+                    print(f"{agent}: {total_reward:.3f}")
+                episode_count += 1
+                break
+
+    env.close()
+    print("\n --------Ending Satellite Defense Environment Test ----------\n")
+    print(f"Completed {episode_count} episodes")
+
+if __name__ == "__main__":
+    test_satellite_defense_env()
