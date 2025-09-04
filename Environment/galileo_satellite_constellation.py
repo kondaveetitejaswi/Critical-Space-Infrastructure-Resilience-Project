@@ -5,6 +5,8 @@ import math
 from dataclasses import dataclass
 from typing import List, Dict
 import random
+from ADP_components import ConstellationState
+from ADP_components import TransitionModel, ModelBasedADPLearner
 
 @dataclass
 class Satellite:
@@ -34,6 +36,15 @@ class GalileoConstellation:
         self.coverage_quality = 1.0
         self.time_step = 0
 
+        self.episode_rewards = []
+
+        # Initialize model-based components
+        self.transition_model = TransitionModel(
+            num_satellites=operational_count + spare_count,
+            num_planes=self.num_planes
+        )
+        self.adp_learner = ModelBasedADPLearner(self.transition_model)
+        
     def _initialize_constellation(self):
         """Distribute satellites across orbital planes"""
         for i in range(self.operational_count):
@@ -100,24 +111,86 @@ class GalileoConstellation:
         self.system_health = np.mean(operational_health) if operational_health else 0
         self.coverage_quality = len([h for h in operational_health if h > 0.5]) / self.operational_count if self.operational_count else 0
 
-    def step(self, attack_prob: float = 0.3):
-        """Progress constellation state by one time step"""
-        self.time_step += 1
+    def calculate_reward(self, old_state: Dict, new_state: Dict, action: str) -> float:
+        """Calculate reward based on state transition and action taken"""
+        reward = 0
         
-        # Natural degradation
+        # Coverage maintenance reward
+        reward += new_state['coverage_quality'] * 10
+        
+        # System health reward
+        reward += new_state['system_health'] * 5
+        
+        # Penalize satellite replacements
+        if action == 'REPLACE_SATELLITE':
+            reward -= 2
+        
+        # Penalize loss of operational satellites
+        if new_state['operational_count'] < old_state['operational_count']:
+            reward -= 5
+        
+        return reward
+
+    def step(self, attack_prob: float = 0.3):
+        """Modified step function with model-based learning"""
+        old_state = self.get_state()
+        
+        # Get action using model-based planning
+        constellation_state = ConstellationState(old_state)
+        action = self.adp_learner.select_action(constellation_state)
+        
+        # Execute action in real environment
+        self._execute_action(action)
+        
+        # Progress time and apply attacks
+        self.time_step += 1
         for sat in self.satellites:
             if sat.status != "decommissioned":
-                sat.health *= 0.999
-                sat.signal_quality *= 0.999
+                sat.health *= self.transition_model.health_decay_rate
+                sat.signal_quality *= self.transition_model.signal_decay_rate
         
-        # Random attack
+        # Apply attack based on model probabilities
         if random.random() < attack_prob:
             attack_type = random.choice(["jamming", "spoofing"])
-            print(f"Attack at step {self.time_step}: {attack_type}")
             self.apply_attack(attack_type)
         
         self._update_constellation_metrics()
-        return self.get_state()
+        new_state = self.get_state()
+        
+        # Update learner with real experience
+        reward = self.calculate_reward(old_state, new_state, action)
+        self.adp_learner.update(
+            ConstellationState(old_state),
+            action,
+            reward,
+            ConstellationState(new_state)
+        )
+        
+        self.episode_rewards.append(reward)
+        return new_state
+    
+    def _execute_action(self, action: str):
+        """Execute the selected action"""
+        if action == 'REPLACE_SATELLITE':
+            operational_sats = [sat for sat in self.satellites if sat.status == "operational"]
+            if operational_sats:
+                damaged_sat = min(operational_sats, key=lambda x: x.health)
+                self._replace_satellite(damaged_sat)
+            
+        elif action == 'ACTIVATE_BACKUP':
+            spare_sats = [sat for sat in self.satellites if sat.status == "spare"]
+            if spare_sats:  # Only proceed if there are spare satellites
+                best_spare = max(spare_sats, key=lambda x: x.health)
+                best_spare.status = "operational"
+        
+        elif action == 'REPOSITION_SATELLITE':
+            # Add logic for repositioning
+            pass
+        
+        elif action == 'INCREASE_SIGNAL_POWER':
+            operational_sats = [sat for sat in self.satellites if sat.status == "operational"]
+            for sat in operational_sats:
+                sat.signal_quality = min(1.0, sat.signal_quality * 1.1)
 
     def visualize(self):
         """Visualize current constellation state"""
@@ -255,29 +328,41 @@ class GalileoConstellation:
 
         plt.show()
 
-
 # Example usage
 if __name__ == "__main__":
     # Create constellation
     constellation = GalileoConstellation(operational_count=6, spare_count=2)
     
-    # Show initial constellation state (before any attacks)
-    print("\nInitial Constellation State:")
-    state = constellation.get_state()
-    print(f"Operational satellites: {state['operational_count']}")
-    print(f"Healthy spares: {state['healthy_spares']}")
+    # Training episodes
+    num_episodes = 100
+    steps_per_episode = 50
+    planning_steps = 10  # Number of model-based planning steps between real steps
     
+    all_episode_rewards = []
     
-    # Then run simulation if desired
-    run_simulation = True  # Set to False to only see initial state
-    if run_simulation:
-        print("\nRunning simulation with attacks...")
-        for _ in range(10):
-            state = constellation.step(attack_prob=0.4)
-            print(f"\nStep {constellation.time_step}")
-            print(f"System Health: {state['system_health']:.2f}")
-            print(f"Coverage Quality: {state['coverage_quality']:.2f}")
+    for episode in range(num_episodes):
+        constellation = GalileoConstellation(operational_count=6, spare_count=2)
+        episode_rewards = []
         
-        # Show final state
-        constellation.visualize_2d_polar()
-        #constellation.visualize_3d()
+        for step in range(steps_per_episode):
+            # Real environment step
+            state = constellation.step(attack_prob=0.4)
+            
+            # Model-based planning steps
+            for _ in range(planning_steps):
+                constellation.adp_learner.update_from_model()
+            
+            if state['operational_count'] == 0:
+                print(f"\nEpisode {episode+1} terminated early - No operational satellites")
+                break
+            
+            if step % 10 == 0:
+                print(f"\nEpisode {episode+1}, Step {step}")
+                print(f"System Health: {state['system_health']:.2f}")
+                print(f"Coverage Quality: {state['coverage_quality']:.2f}")
+                print(f"Operational Count: {state['operational_count']}")
+                print(f"Healthy Spares: {state['healthy_spares']}")
+        
+        avg_reward = np.mean(constellation.episode_rewards)
+        all_episode_rewards.append(avg_reward)
+        print(f"\nEpisode {episode+1} complete. Average reward: {avg_reward:.2f}")
