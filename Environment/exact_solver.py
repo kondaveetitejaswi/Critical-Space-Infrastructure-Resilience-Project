@@ -295,8 +295,8 @@ class ExactDPSolver:
     
         return V_pi
 
-    def run_policy_rollout(self, start_state, n_episodes=1000, max_steps=100):
-        """Run Monte Carlo rollouts to validate policy"""
+    def run_random_policy_rollout(self, start_state, n_episodes=1000, max_steps=100):
+        """Run Monte Carlo rollouts with uniformly random action selection"""
         returns = []
         
         for _ in range(n_episodes):
@@ -307,9 +307,9 @@ class ExactDPSolver:
             for step in range(max_steps):
                 if self.mdp.is_terminal(state):
                     break
-                    
-                # Get action from policy
-                action = self.mdp.actions[self.policy[self.mdp.state_to_idx[state]]]
+                
+                # Select action uniformly at random
+                action = np.random.choice(self.mdp.actions)
                 
                 # Sample transition
                 transitions = self.mdp.transition(state, action)

@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from toy_mdp import ToyConstellationMDP
 from exact_solver import ExactDPSolver
 from collections import defaultdict
+import pandas as pd
 
 # Set plotting style (using matplotlib built-in styles)
 plt.style.use('default')
@@ -187,7 +188,171 @@ def create_action_distribution(mdp, solver, V, policy):
         height = bar.get_height()
         plt.text(bar.get_x() + bar.get_width()/2., height + 0.5,
                 f'{pct:.1f}%', ha='center', va='bottom', fontweight='bold')
+def get_expected_rational_action(state, mdp):
+    """
+    Determine expected rational action based on state and MDP structure.
+    Uses domain knowledge about satellite constellation management.
+    
+    Parameters:
+    -----------
+    state : tuple
+        State tuple (oc, sp, h, cov) where:
+        - oc: operational count
+        - sp: spare parts available
+        - h: health level (0.0, 0.5, 1.0)
+        - cov: coverage status (0 or 1)
+    mdp : ToyConstellationMDP
+        The MDP instance for reference
+    
+    Returns:
+    --------
+    str : Expected rational action name
+    """
+    oc, sp, h, cov = state  # Correct unpacking order
+    
+    # Priority 1: Critical failure - replace if possible
+    if h == 0.0 and sp > 0:
+        return "REPLACE"
+    
+    # Priority 2: Low operational capacity - activate backup if available
+    if oc < 2 and sp > 0 and h >= 0.5:
+        return "ACTIVATE_BACKUP"
+    
+    # Priority 3: Damaged satellites - boost recovery
+    if 0.0 < h < 1.0:
+        return "BOOST"
+    
+    # Priority 4: Healthy with good capacity - maintain status quo
+    if h == 1.0 and oc >= 2:
+        return "NO_OP"
+    
+    # Edge case: Healthy but low operational count and no spares
+    if h == 1.0 and oc < 2 and sp == 0:
+        return "NO_OP"  # Nothing we can do
+    
+    # Default: Try to improve health if damaged, otherwise no-op
+    return "BOOST" if h < 1.0 else "NO_OP"
 
+
+def plot_policy_vs_rationality(mdp, policy):
+    """
+    Plot the policy's chosen action vs. expected rational action.
+    Uses only matplotlib (no seaborn).
+    
+    Parameters:
+    -----------
+    mdp : ToyConstellationMDP
+        The MDP instance
+    policy : np.ndarray
+        Policy array mapping state indices to action indices
+    
+    Returns:
+    --------
+    pd.DataFrame : DataFrame with detailed comparison data
+    """
+    data = []
+    
+    for state in mdp.states:
+        oc, sp, h, cov = state  # Correct order
+        
+        # Get policy action
+        state_idx = mdp.state_to_idx[state]
+        action_idx = policy[state_idx]
+        policy_action = mdp.actions[action_idx]
+        
+        # Get expected rational action
+        expected_action = get_expected_rational_action(state, mdp)
+        
+        # Check if they match
+        match = (policy_action == expected_action)
+        
+        data.append({
+            "Operational Count": oc,
+            "Spares": sp,
+            "Health": h,
+            "Coverage": cov,
+            "Policy Action": policy_action,
+            "Expected Action": expected_action,
+            "Match": match
+        })
+    
+    df = pd.DataFrame(data)
+    
+    # Create pivot table: Health vs Operational Count (averaged over spares and coverage)
+    pivot = df.pivot_table(
+        index="Health", 
+        columns="Operational Count",
+        values="Match", 
+        aggfunc=lambda x: sum(x) / len(x)  # Match ratio
+    )
+    
+    # Convert to numpy array for plotting
+    grid = pivot.values
+    health_vals = pivot.index.tolist()
+    oc_vals = pivot.columns.tolist()
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Plot heatmap
+    cax = ax.imshow(grid, cmap="RdYlGn", origin="lower", aspect="auto", vmin=0, vmax=1)
+    
+    # Add colorbar
+    cbar = fig.colorbar(cax, ax=ax)
+    cbar.set_label("Action Match Ratio", rotation=270, labelpad=20)
+    
+    # Annotate cells with match ratio and symbol
+    for i in range(len(health_vals)):
+        for j in range(len(oc_vals)):
+            ratio = grid[i, j]
+            symbol = "✓" if ratio >= 0.75 else ("~" if ratio >= 0.5 else "✗")
+            color = "white" if ratio < 0.5 else "black"
+            ax.text(j, i, f"{ratio:.2f}\n{symbol}", 
+                   ha="center", va="center", color=color, fontweight="bold")
+    
+    # Set labels and ticks
+    ax.set_xticks(np.arange(len(oc_vals)))
+    ax.set_yticks(np.arange(len(health_vals)))
+    ax.set_xticklabels(oc_vals)
+    ax.set_yticklabels(health_vals)
+    ax.set_xlabel("Operational Count")
+    ax.set_ylabel("Health Level")
+    ax.set_title("Policy vs Expected Rational Action\n(Averaged over Spares and Coverage States)")
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print summary statistics
+    print("\n" + "="*60)
+    print("POLICY RATIONALITY ANALYSIS")
+    print("="*60)
+    print(f"Overall Match Rate: {df['Match'].mean()*100:.1f}%")
+    print(f"Total States: {len(df)}")
+    print(f"Matching States: {df['Match'].sum()}")
+    print(f"Mismatching States: {(~df['Match']).sum()}")
+    
+    # Show mismatches by action
+    print("\nMismatches by Expected Action:")
+    print("-" * 40)
+    for expected in df['Expected Action'].unique():
+        subset = df[df['Expected Action'] == expected]
+        match_rate = subset['Match'].mean() * 100
+        print(f"{expected:>20}: {match_rate:5.1f}% match rate")
+    
+    # Show specific mismatches
+    mismatches = df[~df['Match']]
+    if len(mismatches) > 0:
+        print("\nDetailed Mismatches (first 10):")
+        print("-" * 60)
+        for idx, row in mismatches.head(10).iterrows():
+            print(f"State (OC:{row['Operational Count']}, SP:{row['Spares']}, "
+                  f"H:{row['Health']}, C:{row['Coverage']})")
+            print(f"  Expected: {row['Expected Action']:>20} | "
+                  f"Policy: {row['Policy Action']}")
+    
+    print("="*60 + "\n")
+    
+    return df
 def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, individual_plots=False):
     """
     Analyze pure DP solution with enhanced visualizations
@@ -419,57 +584,146 @@ def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, in
                     ha='center', va='center', fontweight='bold', 
                     fontsize=label_fontsize)
     
-    # 8. Performance Validation Setup
-    ax8 = plt.subplot(3, 3, 6)
-    test_states = {
-        (2,1,1,1): "Optimal",
-        (1,1,0,0): "Degraded",
-        (0,1,0,0): "Critical"
-    }
-    
-    # Simulate policy performance (placeholder - implement actual rollouts)
-    try:
-        results = {}
-        baseline_results = {}
+    # # 8. Empirical Performance Validation with Monte Carlo Rollouts
+    # ax8 = plt.subplot(3, 3, 6)
+    # test_states = {
+    #     (2,1,1.0,1): "Optimal",
+    #     (1,1,0.0,0): "Degraded",
+    #     (0,1,0.0,0): "Critical"
+    # }
+
+    # try:
+    #     print("\nRunning Monte Carlo validation (this may take a moment)...")
+    #     results = {}
+    #     baseline_results = {}
         
-        for state, desc in test_states.items():
-            if state in mdp.state_to_idx:
-                # Use state value as proxy for expected return
-                opt_return = V[mdp.state_to_idx[state]]
-                # Simulate random policy as 70% of optimal
-                random_return = opt_return * 0.7
+    #     for state, desc in test_states.items():
+    #         if state in mdp.state_to_idx:
+    #             # Run optimal policy rollouts
+    #             opt_mean, opt_std = solver.run_policy_rollout(
+    #                 state, n_episodes=1000, max_steps=100
+    #             )
                 
-                results[state] = (opt_return, opt_return * 0.1)  # mean, std
-                baseline_results[state] = (random_return, random_return * 0.2)
-            else:
-                results[state] = (0, 0)
-                baseline_results[state] = (0, 0)
+    #             # Run random policy rollouts
+    #             random_mean, random_std = solver.run_random_policy_rollout(
+    #                 state, n_episodes=1000, max_steps=100
+    #             )
+                
+    #             results[state] = (opt_mean, opt_std)
+    #             baseline_results[state] = (random_mean, random_std)
+                
+    #             print(f"  {desc:10s}: Optimal={opt_mean:7.2f}±{opt_std:5.2f}, "
+    #                 f"Random={random_mean:7.2f}±{random_std:5.2f}")
+    #         else:
+    #             results[state] = (0, 0)
+    #             baseline_results[state] = (0, 0)
         
-        x = np.arange(len(test_states))
-        width = 0.35
+    #     x = np.arange(len(test_states))
+    #     width = 0.35
         
-        opt_means = [results[s][0] for s in test_states]
-        opt_stds = [results[s][1] for s in test_states]
-        base_means = [baseline_results[s][0] for s in test_states]
-        base_stds = [baseline_results[s][1] for s in test_states]
+    #     opt_means = [results[s][0] for s in test_states]
+    #     opt_stds = [results[s][1] for s in test_states]
+    #     base_means = [baseline_results[s][0] for s in test_states]
+    #     base_stds = [baseline_results[s][1] for s in test_states]
         
-        ax8.bar(x - width/2, opt_means, width, label='Optimal Policy',
-               yerr=opt_stds, capsize=5, alpha=0.8, color='lightcoral', edgecolor='black')
-        ax8.bar(x + width/2, base_means, width, label='Random Policy',
-               yerr=base_stds, capsize=5, alpha=0.8, color='lightblue', edgecolor='black')
+    #     # Plot with empirical error bars
+    #     ax8.bar(x - width/2, opt_means, width, label='Optimal Policy',
+    #         yerr=opt_stds, capsize=5, alpha=0.8, color='lightcoral', 
+    #         edgecolor='black', error_kw={'linewidth': 2})
+    #     ax8.bar(x + width/2, base_means, width, label='Random Policy',
+    #         yerr=base_stds, capsize=5, alpha=0.8, color='lightblue', 
+    #         edgecolor='black', error_kw={'linewidth': 2})
         
-        ax8.set_xlabel('Initial State Condition')
-        ax8.set_ylabel('Expected Return')
-        ax8.set_title('Policy Performance Comparison')
-        ax8.set_xticks(x)
-        ax8.set_xticklabels(test_states.values())
-        ax8.legend()
-        ax8.grid(True, alpha=0.3)
+    #     # Add value labels on bars
+    #     for i, (opt_m, rand_m) in enumerate(zip(opt_means, base_means)):
+    #         ax8.text(i - width/2, opt_m + opt_stds[i] + 2, f'{opt_m:.1f}',
+    #                 ha='center', va='bottom', fontweight='bold', fontsize=label_fontsize-1)
+    #         ax8.text(i + width/2, rand_m + base_stds[i] + 2, f'{rand_m:.1f}',
+    #                 ha='center', va='bottom', fontweight='bold', fontsize=label_fontsize-1)
         
-    except Exception as e:
-        ax8.text(0.5, 0.5, f'Performance validation\nnot available\n({str(e)})', 
-                ha='center', va='center', transform=ax8.transAxes)
-        ax8.set_title('Performance Validation')
+    #     ax8.set_xlabel('Initial State Condition')
+    #     ax8.set_ylabel('Average Return (1000 episodes)')
+    #     ax8.set_title('Empirical Policy Performance\n(Monte Carlo Validation)')
+    #     ax8.set_xticks(x)
+    #     ax8.set_xticklabels(test_states.values())
+    #     ax8.legend(loc='upper left')
+    #     ax8.grid(True, alpha=0.3, axis='y')
+        
+    #     # Add improvement percentage annotations
+    #     for i, (state, desc) in enumerate(test_states.items()):
+    #         if baseline_results[state][0] != 0:
+    #             improvement = ((results[state][0] - baseline_results[state][0]) / 
+    #                         abs(baseline_results[state][0])) * 100
+    #             ax8.text(i, min(opt_means[i], base_means[i]) - 10,
+    #                     f'+{improvement:.0f}%' if improvement > 0 else f'{improvement:.0f}%',
+    #                     ha='center', va='top', fontsize=label_fontsize-1,
+    #                     color='green' if improvement > 0 else 'red',
+    #                     fontweight='bold')
+        
+    #     print("Monte Carlo validation complete.\n")
+
+
+        # 3. Policy vs Rationality Check
+        ax3 = plt.subplot(3, 3, 6)
+
+        # Calculate match ratios for each (health, operational_count) combination
+        oc_vals = list(mdp.op_counts)
+        h_vals = list(mdp.allowed_health)
+        grid = np.zeros((len(h_vals), len(oc_vals)))
+        count_grid = np.zeros((len(h_vals), len(oc_vals)))  # Track number of states
+
+        for state in mdp.states:
+            oc, sp, h, cov = state
+            if oc not in oc_vals or h not in h_vals:
+                continue
+            
+            idx = mdp.state_to_idx[state]
+            chosen_action = mdp.actions[policy[idx]]
+            
+            # Get expected rational action using the corrected function
+            expected = get_expected_rational_action(state, mdp)
+            
+            match = int(chosen_action == expected)
+            
+            oc_idx = oc_vals.index(oc)
+            h_idx = h_vals.index(h)
+            
+            # Accumulate matches (we'll average over spares and coverage)
+            grid[h_idx, oc_idx] += match
+            count_grid[h_idx, oc_idx] += 1
+
+        # Calculate average match ratio
+        grid = np.divide(grid, count_grid, where=count_grid > 0)
+
+        # Plot heatmap
+        im = ax3.imshow(grid, cmap="RdYlGn", origin="lower", aspect="auto", vmin=0, vmax=1)
+
+        # Annotate with symbols
+        for i in range(len(h_vals)):
+            for j in range(len(oc_vals)):
+                ratio = grid[i, j]
+                symbol = "✓" if ratio >= 0.75 else ("~" if ratio >= 0.5 else "✗")
+                color = "white" if ratio < 0.5 else "black"
+                ax3.text(j, i, f"{ratio:.2f}\n{symbol}", 
+                        ha="center", va="center", color=color, 
+                        fontsize=label_fontsize, fontweight="bold")
+
+        ax3.set_xticks(range(len(oc_vals)))
+        ax3.set_yticks(range(len(h_vals)))
+        ax3.set_xticklabels(oc_vals)
+        ax3.set_yticklabels(h_vals)
+        ax3.set_xlabel("Operational Count")
+        ax3.set_ylabel("Health")
+        ax3.set_title("Policy vs Expected Rational Action")
+
+        # Add colorbar
+        cbar = plt.colorbar(im, ax=ax3)
+        cbar.set_label("Match Ratio", rotation=270, labelpad=15)
+        
+    # except Exception as e:
+    #     ax8.text(0.5, 0.5, f'Performance validation\nnot available\n({str(e)})', 
+    #             ha='center', va='center', transform=ax8.transAxes)
+    #     ax8.set_title('Performance Validation')
     
     # # 9. Bellman Residual Analysis
     # ax9 = plt.subplot(3, 3, 9)
@@ -508,7 +762,7 @@ def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, in
         suptitle_size = base_font_size + 2
     else:
         plt.tight_layout(pad=2.0)
-        suptitle_y = 0.3
+        suptitle_y = 0.325
         suptitle_size = base_font_size + 4
     
     plt.suptitle('Dynamic Programming Solution Analysis', 
@@ -571,6 +825,20 @@ def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, in
         print(f"{'Final Delta:':<15} {solver.delta_history[-1]:>8.2e}")
     
     print("\n" + "="*60)
+    # Monte Carlo Validation Results
+    if 'results' in locals() and results:
+        print(f"\nMonte Carlo Validation Results:")
+        print("-" * 60)
+        print(f"{'State':<12} {'Optimal':<20} {'Random':<20} {'Improvement'}")
+        print("-" * 60)
+        for state, desc in test_states.items():
+            if state in results:
+                opt_m, opt_s = results[state]
+                ran_m, ran_s = baseline_results[state]
+                if ran_m != 0:
+                    improvement = ((opt_m - ran_m) / abs(ran_m)) * 100
+                    print(f"{desc:<12} {opt_m:6.2f} ± {opt_s:5.2f}  "
+                        f"{ran_m:6.2f} ± {ran_s:5.2f}  {improvement:+6.1f}%")
 
 if __name__ == "__main__":
     # Example usage with different screen sizes and options:
