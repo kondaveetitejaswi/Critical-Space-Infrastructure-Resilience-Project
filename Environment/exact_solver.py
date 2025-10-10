@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 
 class ExactDPSolver:
-    def __init__(self, mdp: ToyConstellationMDP, gamma: float = 0.95, max_iterations: int = 1000):
+    def __init__(self, mdp: ToyConstellationMDP, gamma: float = 0.9, max_iterations: int = 1000):
         self.mdp = mdp
         self.gamma = gamma
         self.max_iterations = max_iterations

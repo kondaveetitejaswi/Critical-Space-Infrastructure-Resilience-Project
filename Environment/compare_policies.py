@@ -137,19 +137,30 @@ def create_value_breakdown(mdp, solver, V, policy):
     plt.grid(True, alpha=0.3)
 
 def create_convergence_plot(mdp, solver, V, policy):
-    """Create convergence plot"""
+    """Create convergence plot showing actual delta values (not log scale)."""
     if hasattr(solver, 'delta_history') and solver.delta_history:
-        plt.semilogy(solver.delta_history, 'r-', linewidth=2)
-        plt.axhline(y=1e-6, color='k', linestyle='--', alpha=0.7, label='Threshold')
+        deltas = np.array(solver.delta_history)
+        iterations = np.arange(1, len(deltas) + 1)
+
+        plt.plot(iterations, deltas, 'b-', linewidth=2, label='Delta (change in V)')
+        plt.axhline(y=1e-6, color='r', linestyle='--', alpha=0.7, label='Convergence Threshold (1e-6)')
+        
         plt.xlabel('Iteration')
-        plt.ylabel('Delta (log scale)')
-        plt.title('Value Iteration Convergence')
-        plt.legend()
+        plt.ylabel('Delta (Actual Value)')
+        plt.title('Value Iteration Convergence (Actual Deltas)')
         plt.grid(True, alpha=0.3)
+        plt.legend()
+
+        # Annotate last few points to show convergence visually
+        final_iter = len(deltas)
+        if final_iter > 5:
+            last_few = deltas[-5:]
+            plt.scatter(iterations[-5:], last_few, color='green', s=50, label='Final Iterations')
     else:
         plt.text(0.5, 0.5, 'Convergence history not available', 
-                ha='center', va='center', transform=plt.gca().transAxes)
-        plt.title('Convergence Analysis')
+                 ha='center', va='center', transform=plt.gca().transAxes)
+        plt.title('Convergence Analysis (No Data)')
+
 
 def create_performance_plot(mdp, solver, V, policy):
     """Create performance comparison plot"""
@@ -437,38 +448,38 @@ def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, in
                 ax1.text(j, i, action_name, ha='center', va='center', 
                         fontsize=label_fontsize, fontweight='bold', color='white')
     
-    # 2. Enhanced Reward Structure Analysis
-    ax2 = plt.subplot(3, 3, 2)
-    actions = mdp.actions
-    rewards_by_action = {a: [] for a in actions}
+    # # 2. Enhanced Reward Structure Analysis
+    # ax2 = plt.subplot(3, 3, 2)
+    # actions = mdp.actions
+    # rewards_by_action = {a: [] for a in actions}
     
-    for state in mdp.states:
-        for action in actions:
-            transitions = mdp.transition(state, action)
-            avg_reward = sum(p * r for p, _, r in transitions)
-            rewards_by_action[action].append(avg_reward)
+    # for state in mdp.states:
+    #     for action in actions:
+    #         transitions = mdp.transition(state, action)
+    #         avg_reward = sum(p * r for p, _, r in transitions)
+    #         rewards_by_action[action].append(avg_reward)
     
-    # Create enhanced box plot for better distribution visualization
-    data_for_box = [rewards_by_action[a] for a in actions]
-    bp = ax2.boxplot(data_for_box, labels=actions, patch_artist=True, showmeans=True)
+    # # Create enhanced box plot for better distribution visualization
+    # data_for_box = [rewards_by_action[a] for a in actions]
+    # bp = ax2.boxplot(data_for_box, labels=actions, patch_artist=True, showmeans=True)
     
-    # Color the boxes with different colors
-    colors = plt.cm.Set3(np.linspace(0, 1, len(actions)))
-    for patch, color in zip(bp['boxes'], colors):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.7)
+    # # Color the boxes with different colors
+    # colors = plt.cm.Set3(np.linspace(0, 1, len(actions)))
+    # for patch, color in zip(bp['boxes'], colors):
+    #     patch.set_facecolor(color)
+    #     patch.set_alpha(0.7)
     
-    ax2.tick_params(axis='x', rotation=45)
-    ax2.set_ylabel('Expected Reward')
-    ax2.set_title('Reward Distribution by Action\n(Box Plot with Means)')
-    ax2.grid(True, alpha=0.3)
+    # ax2.tick_params(axis='x', rotation=45)
+    # ax2.set_ylabel('Expected Reward')
+    # ax2.set_title('Reward Distribution by Action\n(Box Plot with Means)')
+    # ax2.grid(True, alpha=0.3)
     
-    # Add mean values as text
-    for i, action in enumerate(actions):
-        mean_reward = np.mean(rewards_by_action[action])
-        ax2.text(i+1, mean_reward, f'{mean_reward:.2f}', 
-                ha='center', va='bottom', fontweight='bold', 
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="yellow", alpha=0.7))
+    # # Add mean values as text
+    # for i, action in enumerate(actions):
+    #     mean_reward = np.mean(rewards_by_action[action])
+    #     ax2.text(i+1, mean_reward, f'{mean_reward:.2f}', 
+    #             ha='center', va='bottom', fontweight='bold', 
+    #             bbox=dict(boxstyle="round,pad=0.2", facecolor="yellow", alpha=0.7))
     
     # # 3. Enhanced Value Function Breakdown
     # ax3 = plt.subplot(3, 3, 3)
@@ -497,22 +508,28 @@ def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, in
     # ax3.grid(True, alpha=0.3)
     
     # 4. Enhanced Convergence Analysis
-    ax4 = plt.subplot(3, 3, 3)
+    ax4 = plt.subplot(3, 3, 2)
     if hasattr(solver, 'delta_history') and solver.delta_history:
-        ax4.semilogy(solver.delta_history, 'r-', linewidth=2)
+        deltas = np.array(solver.delta_history)
+        iterations = np.arange(1, len(deltas) + 1)
+
+        ax4.plot(iterations, deltas, color='blue', linewidth=2, label='Delta (change in V)')
+        ax4.axhline(y=1e-6, color='red', linestyle='--', alpha=0.7, label='Convergence Threshold (1e-6)')
         ax4.set_xlabel('Iteration')
-        ax4.set_ylabel('Delta (log scale)')
-        ax4.set_title('Value Iteration Convergence')
-        ax4.grid(True, alpha=0.3)
-        
-        # Add convergence threshold line
-        ax4.axhline(y=1e-6, color='k', linestyle='--', alpha=0.7, label='Threshold')
+        ax4.set_ylabel('Delta (Actual Value)')
+        ax4.set_title('Value Iteration Convergence (Actual Deltas)')
         ax4.legend()
+        ax4.grid(True, alpha=0.3)
+
+        # Highlight last few iterations for better visual clarity
+        if len(deltas) > 5:
+            ax4.scatter(iterations[-5:], deltas[-5:], color='green', s=40, zorder=5)
     else:
         ax4.text(0.5, 0.5, 'Convergence history\nnot available', 
                 ha='center', va='center', transform=ax4.transAxes)
         ax4.set_title('Convergence Analysis')
-    
+
+
     # # 5. State Value Distribution
     # ax5 = plt.subplot(3, 3, 5)
     # n, bins, patches = ax5.hist(V, bins=20, alpha=0.7, edgecolor='black', color='skyblue')
@@ -525,7 +542,7 @@ def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, in
     # ax5.grid(True, alpha=0.3)
     
     # 6. Policy Action Distribution
-    ax6 = plt.subplot(3, 3, 4)
+    ax6 = plt.subplot(3, 3, 3)
     action_counts = defaultdict(int)
     for state_idx, action_idx in enumerate(policy):
         action = mdp.actions[action_idx]
@@ -549,7 +566,7 @@ def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, in
                 f'{pct:.1f}%', ha='center', va='bottom', fontweight='bold')
     
     # 7. Value Function Heatmap by State Dimensions
-    ax7 = plt.subplot(3, 3, 5)
+    ax7 = plt.subplot(3, 3, 4)
     # Create a 2D representation of values
     value_matrix = np.zeros((len(mdp.op_counts), 2))
     for oc_idx, oc in enumerate(mdp.op_counts):
@@ -663,62 +680,62 @@ def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, in
     #     print("Monte Carlo validation complete.\n")
 
 
-        # 3. Policy vs Rationality Check
-        ax3 = plt.subplot(3, 3, 6)
+        # # 3. Policy vs Rationality Check
+        # ax3 = plt.subplot(3, 3, 5)
 
-        # Calculate match ratios for each (health, operational_count) combination
-        oc_vals = list(mdp.op_counts)
-        h_vals = list(mdp.allowed_health)
-        grid = np.zeros((len(h_vals), len(oc_vals)))
-        count_grid = np.zeros((len(h_vals), len(oc_vals)))  # Track number of states
+        # # Calculate match ratios for each (health, operational_count) combination
+        # oc_vals = list(mdp.op_counts)
+        # h_vals = list(mdp.allowed_health)
+        # grid = np.zeros((len(h_vals), len(oc_vals)))
+        # count_grid = np.zeros((len(h_vals), len(oc_vals)))  # Track number of states
 
-        for state in mdp.states:
-            oc, sp, h, cov = state
-            if oc not in oc_vals or h not in h_vals:
-                continue
+        # for state in mdp.states:
+        #     oc, sp, h, cov = state
+        #     if oc not in oc_vals or h not in h_vals:
+        #         continue
             
-            idx = mdp.state_to_idx[state]
-            chosen_action = mdp.actions[policy[idx]]
+        #     idx = mdp.state_to_idx[state]
+        #     chosen_action = mdp.actions[policy[idx]]
             
-            # Get expected rational action using the corrected function
-            expected = get_expected_rational_action(state, mdp)
+        #     # Get expected rational action using the corrected function
+        #     expected = get_expected_rational_action(state, mdp)
             
-            match = int(chosen_action == expected)
+        #     match = int(chosen_action == expected)
             
-            oc_idx = oc_vals.index(oc)
-            h_idx = h_vals.index(h)
+        #     oc_idx = oc_vals.index(oc)
+        #     h_idx = h_vals.index(h)
             
-            # Accumulate matches (we'll average over spares and coverage)
-            grid[h_idx, oc_idx] += match
-            count_grid[h_idx, oc_idx] += 1
+        #     # Accumulate matches (we'll average over spares and coverage)
+        #     grid[h_idx, oc_idx] += match
+        #     count_grid[h_idx, oc_idx] += 1
 
-        # Calculate average match ratio
-        grid = np.divide(grid, count_grid, where=count_grid > 0)
+        # # Calculate average match ratio
+        # grid = np.divide(grid, count_grid, where=count_grid > 0)
 
-        # Plot heatmap
-        im = ax3.imshow(grid, cmap="RdYlGn", origin="lower", aspect="auto", vmin=0, vmax=1)
+        # # Plot heatmap
+        # im = ax3.imshow(grid, cmap="RdYlGn", origin="lower", aspect="auto", vmin=0, vmax=1)
 
-        # Annotate with symbols
-        for i in range(len(h_vals)):
-            for j in range(len(oc_vals)):
-                ratio = grid[i, j]
-                symbol = "✓" if ratio >= 0.75 else ("~" if ratio >= 0.5 else "✗")
-                color = "white" if ratio < 0.5 else "black"
-                ax3.text(j, i, f"{ratio:.2f}\n{symbol}", 
-                        ha="center", va="center", color=color, 
-                        fontsize=label_fontsize, fontweight="bold")
+        # # Annotate with symbols
+        # for i in range(len(h_vals)):
+        #     for j in range(len(oc_vals)):
+        #         ratio = grid[i, j]
+        #         symbol = "✓" if ratio >= 0.75 else ("~" if ratio >= 0.5 else "✗")
+        #         color = "white" if ratio < 0.5 else "black"
+        #         ax3.text(j, i, f"{ratio:.2f}\n{symbol}", 
+        #                 ha="center", va="center", color=color, 
+        #                 fontsize=label_fontsize, fontweight="bold")
 
-        ax3.set_xticks(range(len(oc_vals)))
-        ax3.set_yticks(range(len(h_vals)))
-        ax3.set_xticklabels(oc_vals)
-        ax3.set_yticklabels(h_vals)
-        ax3.set_xlabel("Operational Count")
-        ax3.set_ylabel("Health")
-        ax3.set_title("Policy vs Expected Rational Action")
+        # ax3.set_xticks(range(len(oc_vals)))
+        # ax3.set_yticks(range(len(h_vals)))
+        # ax3.set_xticklabels(oc_vals)
+        # ax3.set_yticklabels(h_vals)
+        # ax3.set_xlabel("Operational Count")
+        # ax3.set_ylabel("Health")
+        # ax3.set_title("Policy vs Expected Rational Action")
 
-        # Add colorbar
-        cbar = plt.colorbar(im, ax=ax3)
-        cbar.set_label("Match Ratio", rotation=270, labelpad=15)
+        # # Add colorbar
+        # cbar = plt.colorbar(im, ax=ax3)
+        # cbar.set_label("Match Ratio", rotation=270, labelpad=15)
         
     # except Exception as e:
     #     ax8.text(0.5, 0.5, f'Performance validation\nnot available\n({str(e)})', 

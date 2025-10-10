@@ -64,6 +64,12 @@ class ToyConstellationMDP:
         """Helper function to discretize health values"""
         return min(self.allowed_health, key=lambda x: abs(x - h))
 
+    def snap_state(self, state):
+        """Ensure next state’s health value matches allowed discrete levels"""
+        oc, sp, h, cov = state
+        return (oc, sp, self.snap_health(h), cov)
+
+
     def get_operational_reward(self, state: Tuple) -> float:
         """Calculate base operational reward based on constellation status"""
         oc, sp, h, cov = state
@@ -87,7 +93,7 @@ class ToyConstellationMDP:
         elif cov == 1 and oc >= 1:
             return 1    # Coverage but no redundancy
         else:
-            return -5   # No coverage - mission critical failure
+            return 0   # No coverage - mission critical failure
 
     def calculate_total_reward(self, state: Tuple, action: str, base_action_reward: float) -> float:
         """Calculate total reward including operational and coverage components"""
@@ -99,86 +105,107 @@ class ToyConstellationMDP:
             proactive_bonus = 2
         elif action == "REPLACE" and state[2] == 0.0:  # Reward necessary replacements
             proactive_bonus = 1
+        elif action == "BOOST" and state[2] == 1.0:
+            proactive_bonus = -5  # Penalize unnecessary boosts
+        elif action == "NO_OP" and state[0] >= 2:
+            proactive_bonus = 2
         else:
             proactive_bonus = 0
         
         return base_action_reward + operational_reward + coverage_reward + proactive_bonus
 
     def transition(self, state: Tuple, action: str) -> List[Tuple[float, Tuple, float]]:
-        """Modified transition function with new reward structure"""
+        """
+        Transition function with realistic and well-separated satellite operations.
+        Each action has distinct meaning and time evolution to prevent overlap.
+        """
         oc, sp, h, cov = state
-        
+
+        # Terminal state check
+        if self.is_terminal(state):
+            return [(1.0, state, 0)]
+
+        # 1️⃣ NO_OP — Maintain current system
+        if action == "NO_OP":
+            if oc == 2 and sp >= 0 and h == 1.0 and cov == 1:
+                # Perfectly healthy — stay same with reward
+                # FIX: Use calculate_total_reward for consistency
+                total_reward = self.calculate_total_reward(state, action, 2)  # Base reward of 2
+                return [(1.0, state, total_reward)]
+            else:
+                degrade_prob = 0.1 if h == 1.0 else (0.3 if h == 0.5 else 0.5)
+                degraded_state = self.snap_state((max(oc - 1, 0), sp, max(h - 0.5, 0.0), 0))
+                stable_state = self.snap_state((oc, sp, h, cov))
+                return [
+                    (1 - degrade_prob, stable_state,
+                    self.calculate_total_reward(stable_state, action, 1)),
+                    (degrade_prob, degraded_state,
+                    self.calculate_total_reward(degraded_state, action, -2))
+                ]
+
+
+        # 2️⃣ BOOST — Gradually improve health
         if action == "BOOST":
             if h < 1.0:
-                if h == 0.0:
-                    next_state_success = (oc, sp, 0.5, 1)
-                    next_state_fail = (oc, sp, 0.0, 0)
-                    return [
-                        (0.85, next_state_success, self.calculate_total_reward(next_state_success, action, 12)),
-                        (0.15, next_state_fail, self.calculate_total_reward(next_state_fail, action, -3))
-                    ]
-                elif h == 0.5:
-                    next_state_success = (oc, sp, 1.0, 1)
-                    next_state_fail = (oc, sp, 0.5, 1)
-                    return [
-                        (0.75, next_state_success, self.calculate_total_reward(next_state_success, action, 8)),
-                        (0.25, next_state_fail, self.calculate_total_reward(next_state_fail, action, -2))
-                    ]
+                improvement_prob = 0.7 if h == 0.0 else 0.8
+                next_health = 0.5 if h == 0.0 else 1.0
+                next_state_success = self.snap_state((oc, sp, next_health, 1))
+                next_state_fail = self.snap_state((oc, sp, h, cov))
+                return [
+                    (improvement_prob, next_state_success,
+                    self.calculate_total_reward(next_state_success, action, 6)),
+                    (1 - improvement_prob, next_state_fail,
+                    self.calculate_total_reward(next_state_fail, action, -2))
+                ]
             else:
-                return [(1.0, state, self.calculate_total_reward(state, action, -8))]
-        
-        elif action == "REPLACE" and sp > 0:
-            # Only allow replacement if satellite is critically damaged or failed
-            if h == 0.0 or oc < 2:  # Critical damage or insufficient operational satellites
-                success_prob = 0.85 if h == 0.0 else 0.75
-                next_state_success = (2, sp-1, 1.0, 1)
-                next_state_fail = (oc, sp-1, 0.0, 0)
+                # FIX: Make penalty even stronger for boosting healthy system
+                # Use calculate_total_reward but with very negative base
+                return [(1.0, self.snap_state(state), 
+                        self.calculate_total_reward(self.snap_state(state), action, -30))]  # Increased penalty
+
+        # 3️⃣ REPLACE — Replace completely failed satellite using spare
+        if action == "REPLACE":
+            if sp > 0 and h == 0.0:
+                # Replacement begins (partial restoration stage)
+                start_prob = 0.9
+                next_state_partial = self.snap_state((min(oc + 1, 2), sp - 1, 0.5, 1))
+                next_state_fail = self.snap_state((oc, sp - 1, 0.0, 0))
                 return [
-                    (success_prob, next_state_success, self.calculate_total_reward(next_state_success, action, 10)),
-                    (1-success_prob, next_state_fail, self.calculate_total_reward(next_state_fail, action, -12))
+                    (start_prob, next_state_partial,
+                    self.calculate_total_reward(next_state_partial, action, 8)),
+                    (1 - start_prob, next_state_fail,
+                    self.calculate_total_reward(next_state_fail, action, -5))
                 ]
-            elif h < 1.0:  # Damaged but not critical - should try BOOST first
-                return [(1.0, (oc, sp-1, h, cov), -20)]  # Heavy penalty for premature replacement
-            else:  # Trying to replace healthy satellite - forbidden
-                return [(1.0, (oc, sp, h, cov), -25)]  # Severe penalty
-        
-        elif action == "ACTIVATE_BACKUP" and sp > 0:
-            # Only useful when operational capacity is low
-            if oc < 2:  # Need more operational satellites
-                success_prob = 0.8 if h >= 0.5 else 0.6  # Higher success if main constellation healthier
+            elif h > 0.0:
+                # Replacing a working satellite → penalize
+                return [(1.0, self.snap_state((oc, sp, h, cov)),
+         self.calculate_total_reward(self.snap_state((oc, sp, h, cov)), action, -15))]
+            else:
+                # No spares → no replacement possible
+                return [(1.0, self.snap_state(state), -10)]
+
+        # 4️⃣ ACTIVATE_BACKUP — Deploy extra spare to improve coverage
+        if action == "ACTIVATE_BACKUP":
+            if sp > 0 and oc < 2:
+                success_prob = 0.85
+                #next_state_success = (min(oc + 1, 2), sp - 1, h, 1)
+                next_state_success = self.snap_state((min(oc + 1, 2), sp - 1, h, 1))
+                next_state_fail = self.snap_state((oc, sp - 1, h, 0))
+
                 return [
-                    (success_prob, (min(oc+1, 2), sp-1, h, 1), 6),  # Successfully activated backup
-                    (1-success_prob, (oc, sp-1, max(h-0.5, 0), 0), -5)  # Activation failed, system stress
+                    (success_prob, next_state_success,
+                    self.calculate_total_reward(next_state_success, action, 5)),
+                    (1 - success_prob, next_state_fail,
+                    self.calculate_total_reward(next_state_fail, action, -3))
                 ]
-            else:  # Already have sufficient operational satellites
-                return [(1.0, (oc, sp, h, cov), -10)]  # Penalty for unnecessary activation
-        
-        else:  # NO_OP - natural evolution
-            # Calculate degradation probability based on current health and operational stress
-            if h == 1.0:  # Healthy satellites
-                stable_prob = 0.85 if oc >= 2 else 0.75  # Less stable if overworked
-                return [
-                    (stable_prob, (oc, sp, 1.0, cov), 2),        # Stay healthy, small operational reward
-                    (1-stable_prob, (oc, sp, 0.5, max(cov-1, 0)), -3)  # Minor degradation
-                ]
-            elif h == 0.5:  # Partially damaged
-                # Can either recover naturally, stay same, or degrade further
-                recover_prob = 0.2 if oc >= 2 else 0.1  # Better chance if not overworked
-                degrade_prob = 0.3 if oc < 2 else 0.2   # Higher chance if overworked
-                stable_prob = 1 - recover_prob - degrade_prob
-                
-                return [
-                    (recover_prob, (oc, sp, 1.0, 1), 5),              # Natural recovery
-                    (stable_prob, (oc, sp, 0.5, cov), -1),            # Remains damaged
-                    (degrade_prob, (max(oc-1, 0), sp, 0.0, 0), -8)    # Critical failure
-                ]
-            else:  # h == 0.0 - critically damaged
-                # High chance of complete failure, low chance of staying critical
-                failure_prob = 0.6 if oc < 2 else 0.4   # Higher failure if overworked
-                return [
-                    (1-failure_prob, (oc, sp, 0.0, 0), -4),           # Stays critical
-                    (failure_prob, (max(oc-1, 0), sp, 0.0, 0), -15)   # Complete satellite loss
-                ]
+            else:
+                # Unnecessary activation when already optimal
+                return [(1.0, state, -8)]
+
+        # Default fallback (should never hit)
+        return [(1.0, state, -1)]
+
+                    
     
     def reset_tracking(self):
         """Reset tracking dictionaries"""
