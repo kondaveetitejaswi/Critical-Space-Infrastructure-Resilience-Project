@@ -6,6 +6,7 @@ from toy_mdp import ToyConstellationMDP
 from exact_solver import ExactDPSolver
 from collections import defaultdict
 import pandas as pd
+import matplotlib.patches as mpatches
 
 # Set plotting style (using matplotlib built-in styles)
 plt.style.use('default')
@@ -18,6 +19,245 @@ plt.rcParams['grid.alpha'] = 0.3
 plt.rcParams['font.size'] = 10
 plt.rcParams['axes.titlesize'] = 12
 plt.rcParams['axes.labelsize'] = 10
+
+def create_3d_visualization(mdp, policy):
+    '''Create a #D scatter plot showing operational count, spares, and health
+    with actions indicated by color and marker style.
+    '''
+    fig = plt.figure(figsize = (14, 10))
+    ax = fig.add_subplot(111, projection = '3d')
+
+    #definign action colors and markers for each actions
+    action_colors = {
+        "NO_OP": "orange",
+        "REPLACE": "red",
+        "ACTIVATE_BACKUP": "blue",
+        "BOOST": "green"
+    }
+
+    action_markers = {
+        "NO_OP": "o",
+        "REPLACE": "^",
+        "ACTIVATE_BACKUP": "s",
+        "BOOST": "D"
+    }
+
+    # Collect data points
+    plot_data = {action: {"oc": [], "sp": [], "h": []} for action in mdp.actions}
+
+    for state in mdp.states:
+        oc, sp, h, cov = state
+        state_idx = mdp.state_to_idx[state]
+        action_idx = policy[state_idx]
+        action = mdp.actions[action_idx]
+
+        # Add jitter to avoid overlapping points
+        jitter_oc = oc + np.random.uniform(-0.05, 0.05)
+        jitter_sp = sp + np.random.uniform(-0.05, 0.05)
+        jitter_h = h + np.random.uniform(-0.02, 0.02)
+
+        plot_data[action]["oc"].append(jitter_oc)
+        plot_data[action]["sp"].append(jitter_sp)
+        plot_data[action]["h"].append(jitter_h)
+
+    # Plot each action with its own color and marker
+    for action in mdp.actions:
+        if len(plot_data[action]['oc']) > 0:
+            ax.scatter(
+                plot_data[action]['oc'],
+                plot_data[action]['sp'],
+                plot_data[action]['h'],
+                c = action_colors[action],
+                marker = action_markers[action],
+                s = 150,
+                alpha=0.7,
+                edgecolors = 'black',
+                linewidths=1.5,
+                label = action
+            )
+    ax.set_xlabel('Operational Count', fontsize=12, fontweight = 'bold')
+    ax.set_ylabel('Spares Available', fontsize=12, fontweight = 'bold')
+    ax.set_zlabel('Health Level', fontsize=12, fontweight = 'bold')
+    ax.set_title('Policy Visualization: 3D State Space', fontsize = 14, fontweight = 'bold', pad = 20)
+
+    ax.legend(loc = 'upper left', fontsize=10, framealpha = 0.9)
+    ax.grid(True, alpha=0.3)
+
+    ax.set_xticks(mdp.op_counts)
+    ax.set_yticks([0,1])
+    ax.set_yticklabels(['Spare Satellite Not Available', 'Spare Satellite Available'])
+    ax.set_zticks(mdp.allowed_health)
+
+    plt.tight_layout()
+    return fig
+
+
+def create_faceted_heatmaps(mdp, policy):
+    """ Create separate heatmaps for each health level, showing operational count vs spares.
+    This provides a clear view of how policy changes across health states.
+    """
+    fig, axes = plt.subplots(1, len(mdp.allowed_health), figsize = (16, 5))
+
+    action_to_num = {action: idx for idx, action in enumerate(mdp.actions)}
+
+    for h_idx, h in enumerate(mdp.allowed_health):
+        ax = axes[h_idx] if len(mdp.allowed_health) > 1 else axes
+
+        # Create policy matrix for this health level
+        policy_matrix = np.full((len(mdp.op_counts), 2), -1, dtype = int)
+
+        for state in mdp.states:
+            oc, sp, state_h, cov = state
+            if state_h == h and oc in mdp.op_counts:
+                state_idx = mdp.state_to_idx[state]
+                action_idx = policy[state_idx]
+                oc_idx = list(mdp.op_counts).index(oc)
+                policy_matrix[oc_idx, sp] = action_idx
+
+        im = ax.imshow(policy_matrix, cmap = 'tab10', aspect = 'auto', vmin = 0, vmax = len(mdp.actions)-1)
+
+        ax.set_xlabel('Spare Availability', fontsize =11, fontweight = 'bold')
+        ax.set_ylabel('Operational Count', fontsize =11, fontweight = 'bold')
+        ax.set_title(f'Policy Heatmap (Health={h})', fontsize = 12, fontweight = 'bold')
+
+        ax.set_xticks([0,1])
+        ax.set_xticklabels(['Spare Sat: Not Available', 'Spare Sat: Available'])
+        ax.set_yticks(range(len(mdp.op_counts)))
+        ax.set_yticklabels(mdp.op_counts)
+
+        #Add action labels
+        for i in range(len(mdp.op_counts)):
+            for j in range(2):
+                if policy_matrix[i, j] >= 0:
+                    action_name = mdp.actions[policy_matrix[i, j]]
+                    short_name = action_name.replace('ACTIVATE_BACKUP', 'AB').replace('REPLACE', 'R').replace('BOOST', 'B').replace('NO_OP', 'NO')
+                    ax.text(j, i, short_name, ha = 'center', va = 'center', fontsize = 8, fontweight = 'bold', color = 'white', 
+                            bbox = dict(boxstyle = "round,pad=0.2", facecolor = "black", alpha = 0.5))
+    # Add colorbar
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+    cbar = fig.colorbar(im, cax = cbar_ax, ticks = range(len(mdp.actions)))
+    cbar.set_label('Action', rotation = 270, labelpad = 20, fontweight = 'bold')
+    cbar.ax.set_yticklabels(mdp.actions, fontsize = 9)
+
+    plt.suptitle('Policy Across Health Levels\n(Operational Count vs Spares)',
+                 fontsize = 14, fontweight = 'bold', y = 0.98)
+    
+    plt.tight_layout(rect=[0,0,0.9, 0.95])
+    return fig
+def create_bubble_chart(mdp, policy):
+    """
+    Create a 2D bubble chart where:
+    - X-axis: Operational count
+    - Y-axis: Health level
+    - Bubble size: Spare availability (larger = has spares)
+    - Bubble color: Action selected
+    """
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    action_colors = {
+        "NO_OP": "#2ecc71",
+        "REPLACE": "#e74c3c",
+        "ACTIVATE_BACKUP": "#3498db",
+        "BOOST": "#f39c12"
+    }
+    
+    # Collect data
+    for state in mdp.states:
+        oc, sp, h, cov = state
+        state_idx = mdp.state_to_idx[state]
+        action_idx = policy[state_idx]
+        action = mdp.actions[action_idx]
+        
+        # Bubble size based on spares
+        size = 500 if sp == 1 else 200
+        
+        # Add slight jitter to avoid perfect overlap
+        jitter_oc = oc + np.random.uniform(-0.08, 0.08)
+        jitter_h = h + np.random.uniform(-0.02, 0.02)
+        
+        ax.scatter(
+            jitter_oc, jitter_h,
+            s=size,
+            c=action_colors[action],
+            alpha=0.6,
+            edgecolors='black',
+            linewidth=1.5
+        )
+        
+        # Add action label on bubble
+        if np.random.random() > 0.5:  # Show label for some bubbles to avoid clutter
+            short_action = action.replace('ACTIVATE_', 'ACT_').replace('BACKUP', 'BKP')
+            ax.text(jitter_oc, jitter_h, short_action,
+                   ha='center', va='center', fontsize=7,
+                   fontweight='bold', color='white',
+                   bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.7))
+    
+    ax.set_xlabel('Operational Count', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Health Level', fontsize=12, fontweight='bold')
+    ax.set_title('Policy Bubble Chart\n(Size = Spare Availability, Color = Action)', 
+                 fontsize=14, fontweight='bold')
+    
+    ax.set_xticks(mdp.op_counts)
+    ax.set_yticks(mdp.allowed_health)
+    ax.grid(True, alpha=0.3)
+    
+    # Create custom legend
+    legend_elements = []
+    for action, color in action_colors.items():
+        legend_elements.append(mpatches.Patch(color=color, label=action, alpha=0.7))
+    
+    # Add size legend
+    legend_elements.append(mpatches.Circle((0, 0), 0.1, fill=False, 
+                                          edgecolor='black', linewidth=2,
+                                          label='Large = Has Spares'))
+    legend_elements.append(mpatches.Circle((0, 0), 0.05, fill=False,
+                                          edgecolor='black', linewidth=2,
+                                          label='Small = No Spares'))
+    
+    ax.legend(handles=legend_elements, loc='best', fontsize=10, framealpha=0.9)
+    plt.tight_layout()
+    return fig
+
+
+def visualize_policy_with_health(mdp, policy, vis_type='all', save_plots=False):
+    """
+    Main function to create enhanced policy visualizations.
+    
+    Parameters:
+    -----------
+    mdp : ToyConstellationMDP
+        The MDP instance
+    policy : np.ndarray
+        Policy array
+    vis_type : str
+        Type of visualization: '3d', 'faceted', 'bubble', or 'all'
+    save_plots : bool
+        Whether to save plots to files
+    """
+    
+    if vis_type == '3d' or vis_type == 'all':
+        print("Creating 3D scatter plot...")
+        fig1 = create_3d_visualization(mdp, policy)
+        if save_plots:
+            plt.savefig('policy_3d_scatter.png', dpi=150, bbox_inches='tight')
+            print("  Saved: policy_3d_scatter.png")
+        plt.show()
+    
+    if vis_type == 'faceted' or vis_type == 'all':
+        print("Creating faceted heatmaps...")
+        fig2 = create_faceted_heatmaps(mdp, policy)
+        if save_plots:
+            plt.savefig('policy_faceted_heatmaps.png', dpi=150, bbox_inches='tight')
+            print("  Saved: policy_faceted_heatmaps.png")
+        plt.show()
+    
+    if vis_type == 'bubble' or vis_type == 'all':
+        print("Creating bubble chart...")
+        fig3 = create_bubble_chart(mdp, policy)
+        if save_plots:
+            plt.savefig('policy_bubble_chart.png', dpi=150, bbox_inches='tight')
+            print("  Saved: policy_bubble_chart.png")
+        plt.show()
 
 def create_individual_plots(mdp, solver, V, policy, figure_size='medium', save_plots=False):
     """
@@ -364,7 +604,7 @@ def plot_policy_vs_rationality(mdp, policy):
     print("="*60 + "\n")
     
     return df
-def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, individual_plots=False):
+def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, individual_plots=False, enhanced_viz = True, enhanced_viz_type='faceted'):
     """
     Analyze pure DP solution with enhanced visualizations
     
@@ -378,13 +618,24 @@ def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, in
         DPI for saved plots (default: 100)
     individual_plots : bool, optional
         Whether to create individual plots instead of one large subplot figure
+    enhanced_vix : bool, optional
+        Whether to create enhanced policy visualizations with health factor (default: True)
+    enhanced_viz_type: str, optional
+        Type of enhanced visualization: '3d', 'faceted', 'bubble', or 'all' (default: 'faceted')
     """
+
     print("\nAnalyzing Dynamic Programming Solution...")
     mdp = ToyConstellationMDP()
     solver = ExactDPSolver(mdp, gamma=0.95)
     
     # Run value iteration
     V, policy = solver.value_iteration(theta=1e-6)
+
+    if enhanced_viz:
+        print("\n" + "="*60)
+        print("ENHANCED POLICY VISUALIZATION (with health factor)")
+        print("="*60)
+        visualize_policy_with_health(mdp, policy, vis_type = enhanced_viz_type, save_plots = save_plots)
     
     # Check if user wants individual plots for better screen management
     if individual_plots:
@@ -791,6 +1042,7 @@ def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, in
         plt.savefig(filename, dpi=plot_dpi, bbox_inches='tight', 
                    facecolor='white', edgecolor='none')
         print(f"\nPlots saved as: {filename}")
+        plt.show()
         plt.close()
     else:
         plt.show()
@@ -864,7 +1116,8 @@ if __name__ == "__main__":
     # analyze_dp_solution(figure_size='small', individual_plots=True)
     
     # Option 2: For medium screens - Compact subplot layout (default)
-    analyze_dp_solution(figure_size='medium')
+    # analyze_dp_solution(figure_size='medium', enhanced_viz = True, enhanced_viz_type = 'faceted')
+
     
     # Option 3: For large screens - Full subplot layout
     # analyze_dp_solution(figure_size='large')
@@ -873,7 +1126,7 @@ if __name__ == "__main__":
     # analyze_dp_solution(figure_size='xlarge')
     
     # Option 5: Save plots instead of displaying (good for any screen size)
-    # analyze_dp_solution(figure_size='medium', save_plots=True, plot_dpi=150)
+    analyze_dp_solution(figure_size='medium', save_plots=True, plot_dpi=150, individual_plots=False, enhanced_viz = True, enhanced_viz_type='faceted')
     
     # Option 6: Individual plots saved to files (best for small screens)
     # analyze_dp_solution(figure_size='small', individual_plots=True, save_plots=True)
