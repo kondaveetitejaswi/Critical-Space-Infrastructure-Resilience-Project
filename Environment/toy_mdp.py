@@ -100,19 +100,22 @@ class ToyConstellationMDP:
         operational_reward = self.get_operational_reward(state)
         coverage_reward = self.get_coverage_reward(state)
         
-        # Action-specific modifiers
-        if action == "BOOST" and state[2] < 1.0:  # Reward proactive maintenance
-            proactive_bonus = 2
-        elif action == "REPLACE" and state[2] == 0.0:  # Reward necessary replacements
-            proactive_bonus = 1
-        elif action == "BOOST" and state[2] == 1.0:
-            proactive_bonus = -5  # Penalize unnecessary boosts
-        elif action == "NO_OP" and state[0] >= 2:
-            proactive_bonus = 2
-        else:
-            proactive_bonus = 0
+        # # Action-specific modifiers 
+        """
+        These immediate proactive rewards are actually useless in our implementation and cause issues in the rewarding wise.
+        """
+        # if action == "BOOST" and state[2] < 1.0:  # Reward proactive maintenance
+        #     proactive_bonus = 2
+        # elif action == "REPLACE" and state[2] == 0.0:  # Reward necessary replacements
+        #     proactive_bonus = 1
+        # elif action == "BOOST" and state[2] == 1.0:
+        #     proactive_bonus = -5  # Penalize unnecessary boosts
+        # elif action == "NO_OP" and state[0] >= 2:
+        #     proactive_bonus = 2
+        # else:
+        #     proactive_bonus = 0
         
-        return base_action_reward + operational_reward + coverage_reward + proactive_bonus
+        return base_action_reward + operational_reward + coverage_reward 
 
     def transition(self, state: Tuple, action: str) -> List[Tuple[float, Tuple, float]]:
         """

@@ -623,4 +623,5 @@ def run_properly_fixed_adp():
 
 
 if __name__ == "__main__":
-    solver, V, policy = run_properly_fixed_adp()
+    return None
+    #solver, V, policy = run_properly_fixed_adp()
