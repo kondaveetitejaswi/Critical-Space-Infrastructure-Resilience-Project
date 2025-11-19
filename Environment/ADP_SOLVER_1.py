@@ -445,6 +445,75 @@ class ADPSolver:
         plt.tight_layout(rect=[0, 0, 0.9, 0.95])
         return fig
 
+    def create_faceted_heatmaps_constellation_level(self):
+        fig, axes = plt.subplots(1, len(self.mdp.allowed_health), figsize=(16, 5))
+        
+        # Handle single health level case
+        if len(self.mdp.allowed_health) == 1:
+            axes = [axes]
+
+        action_to_num = {action: idx for idx, action in enumerate(self.mdp.actions)}
+
+        for h_idx, h in enumerate(self.mdp.allowed_health):
+            ax = axes[h_idx]
+            
+            # Create matrix with correct dimensions for spares
+            n_spares = len(self.mdp.spares)
+            n_ops = len(self.mdp.op_counts)
+            policy_matrix = np.full((n_ops, n_spares), -1, dtype=int)
+
+            for state in self.mdp.states:
+                oc, sp, state_h, cov = state
+                if state_h == h and oc in self.mdp.op_counts:
+                    state_idx = self.mdp.state_to_idx[state]
+                    action_idx = self.policy[state_idx]
+                    oc_idx = list(self.mdp.op_counts).index(oc)
+                    sp_idx = list(self.mdp.spares).index(sp)  # ← Use spares list
+                    policy_matrix[oc_idx, sp_idx] = action_idx
+
+            im = ax.imshow(policy_matrix, cmap='tab10', aspect='auto', 
+                        vmin=0, vmax=len(self.mdp.actions)-1)
+
+            ax.set_xlabel('Spare Availability', fontsize=11, fontweight='bold')
+            ax.set_ylabel('Operational Count', fontsize=11, fontweight='bold')
+            ax.set_title(f'ADP Policy Heatmap (Health={h})', fontsize=12, fontweight='bold')
+
+            # Set x-axis labels based on actual spare counts
+            ax.set_xticks(range(n_spares))
+            spare_labels = [f'Spares: {sp}' for sp in self.mdp.spares]
+            ax.set_xticklabels(spare_labels, rotation=45, ha='right')
+            
+            ax.set_yticks(range(n_ops))
+            ax.set_yticklabels(self.mdp.op_counts)
+
+            # Add text annotations
+            for i in range(n_ops):
+                for j in range(n_spares):
+                    if policy_matrix[i, j] >= 0:
+                        action_name = self.mdp.actions[policy_matrix[i, j]]
+                        short_name = (action_name
+                                    .replace('ACTIVATE_BACKUP', 'AB')
+                                    .replace('REPLACE', 'R')
+                                    .replace('BOOST', 'B')
+                                    .replace('NO_OP', 'NO'))
+                        ax.text(j, i, short_name, ha='center', va='center', 
+                            fontsize=8, fontweight='bold',
+                            color='white', 
+                            bbox=dict(boxstyle="round,pad=0.2", 
+                                    facecolor="black", alpha=0.5))
+
+        # Add colorbar
+        cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+        cbar = fig.colorbar(im, cax=cbar_ax, ticks=range(len(self.mdp.actions)))
+        cbar.set_label('Action', rotation=270, labelpad=20, fontweight='bold')
+        cbar.ax.set_yticklabels(self.mdp.actions, fontsize=9)
+
+        plt.suptitle('ADP Policy Across Health Levels\n(Operational Count vs Spares)',
+                    fontsize=14, fontweight='bold', y=0.98)
+        
+        plt.tight_layout(rect=[0, 0, 0.9, 0.95])
+        return fig
+
     def create_comprehensive_analysis(self, figure_size = 'medium', save_plots = False, plot_dpi = 100):
         size_options = {
             'small': (12, 10),
@@ -575,6 +644,172 @@ class ADPSolver:
         else:
             plt.show()
 
+    def create_comprehensive_analysis_constellation_level(self, figure_size='medium', save_plots=True, plot_dpi=100):
+        """Create comprehensive analysis plots with dynamic dimensions"""
+        
+        size_options = {
+            'small': (12, 10),
+            'medium': (16, 12),
+            'large': (20, 16),
+            'xlarge': (24, 20)
+        }
+
+        figsize = size_options.get(figure_size, (16, 12))
+        base_font_size = 8 if figsize[0] <= 12 else (10 if figsize[0] <= 16 else 12)
+
+        plt.rcParams.update({
+            'font.size': base_font_size,
+            'axes.titlesize': base_font_size + 2,
+            'axes.labelsize': base_font_size,
+            'legend.fontsize': base_font_size - 1,
+            'xtick.labelsize': base_font_size - 1,
+            'ytick.labelsize': base_font_size - 1
+        })
+        
+        fig = plt.figure(figsize=figsize)
+        label_fontsize = max(6, base_font_size - 2)
+
+        # Get actual dimensions from MDP
+        n_ops = len(self.mdp.op_counts)
+        n_spares = len(self.mdp.spares)
+        n_health = len(self.mdp.allowed_health)
+
+        # ============ SUBPLOT 1: Policy Heatmap ============
+        ax1 = plt.subplot(2, 2, 1)
+        
+        # Create matrix with CORRECT dimensions
+        policy_matrix = np.full((n_ops, n_spares, n_health), -1, dtype=int)
+        
+        for state in self.mdp.states:
+            oc, sp, h, _ = state
+            try:
+                oc_idx = list(self.mdp.op_counts).index(oc)
+                sp_idx = list(self.mdp.spares).index(sp)
+                h_idx = list(self.mdp.allowed_health).index(h)
+                
+                state_idx = self.mdp.state_to_idx[state]
+                action_idx = self.policy[state_idx]
+                
+                policy_matrix[oc_idx, sp_idx, h_idx] = action_idx
+            except (ValueError, KeyError):
+                continue
+        
+        # Show policy for healthiest systems
+        healthy_policy = policy_matrix[:, :, -1]  # Last index = max health
+        im1 = ax1.imshow(healthy_policy, cmap='tab10', aspect='auto', 
+                        vmin=0, vmax=len(self.mdp.actions)-1)
+        
+        ax1.set_xlabel('Spare Count', fontweight='bold')
+        ax1.set_ylabel('Operational Count', fontweight='bold')
+        ax1.set_title('ADP Policy (Healthy Systems)', fontweight='bold')
+        
+        ax1.set_xticks(range(n_spares))
+        ax1.set_xticklabels([str(sp) for sp in self.mdp.spares])
+        ax1.set_yticks(range(n_ops))
+        ax1.set_yticklabels([str(oc) for oc in self.mdp.op_counts])
+        
+        # Add action labels
+        for i in range(n_ops):
+            for j in range(n_spares):
+                if healthy_policy[i, j] >= 0:
+                    action_name = self.mdp.actions[int(healthy_policy[i, j])]
+                    short = action_name[:2].upper()  # First 2 chars
+                    ax1.text(j, i, short, ha='center', va='center', 
+                            fontsize=label_fontsize, fontweight='bold', 
+                            color='white', bbox=dict(boxstyle='round,pad=0.3', 
+                                                facecolor='black', alpha=0.7))
+        
+        # ============ SUBPLOT 2: Action Distribution ============
+        ax2 = plt.subplot(2, 2, 2)
+        action_counts = defaultdict(int)
+        
+        for action_idx in self.policy:
+            action = self.mdp.actions[action_idx]
+            action_counts[action] += 1
+        
+        actions_list = list(action_counts.keys())
+        counts_list = list(action_counts.values())
+        percentages = [100 * c / len(self.policy) for c in counts_list]
+        
+        colors = plt.cm.tab10(np.linspace(0, 1, len(actions_list)))
+        bars = ax2.bar(range(len(actions_list)), percentages, color=colors, 
+                    alpha=0.7, edgecolor='black', linewidth=1.5)
+        
+        ax2.set_ylabel('Percentage of States (%)', fontweight='bold')
+        ax2.set_title('Policy Action Distribution', fontweight='bold')
+        ax2.set_xticks(range(len(actions_list)))
+        ax2.set_xticklabels(actions_list, rotation=45, ha='right')
+        ax2.grid(True, alpha=0.3, axis='y')
+        
+        # Add percentage labels on bars
+        for bar, pct in zip(bars, percentages):
+            height = bar.get_height()
+            ax2.text(bar.get_x() + bar.get_width()/2., height + 1,
+                    f'{pct:.1f}%', ha='center', va='bottom', 
+                    fontweight='bold', fontsize=label_fontsize)
+        
+        # ============ SUBPLOT 3: State Value Heatmap ============
+        ax3 = plt.subplot(2, 2, 3)
+        value_matrix = np.zeros((n_ops, n_spares))
+        
+        for i, oc in enumerate(self.mdp.op_counts):
+            for j, sp in enumerate(self.mdp.spares):
+                values = []
+                for h in self.mdp.allowed_health:
+                    for cov in [0, 1]:
+                        state = (oc, sp, h, cov)
+                        if state in self.mdp.state_to_idx:
+                            idx = self.mdp.state_to_idx[state]
+                            values.append(self.V[idx])
+                
+                value_matrix[i, j] = np.mean(values) if values else 0
+        
+        im3 = ax3.imshow(value_matrix, cmap='viridis', aspect='auto')
+        ax3.set_xlabel('Spare Count', fontweight='bold')
+        ax3.set_ylabel('Operational Count', fontweight='bold')
+        ax3.set_title('Average State Values', fontweight='bold')
+        
+        ax3.set_xticks(range(n_spares))
+        ax3.set_xticklabels([str(sp) for sp in self.mdp.spares])
+        ax3.set_yticks(range(n_ops))
+        ax3.set_yticklabels([str(oc) for oc in self.mdp.op_counts])
+        
+        cbar3 = plt.colorbar(im3, ax=ax3)
+        cbar3.set_label('Value', fontweight='bold')
+        
+        # Add value labels
+        for i in range(n_ops):
+            for j in range(n_spares):
+                ax3.text(j, i, f'{value_matrix[i, j]:.1f}', 
+                        ha='center', va='center', fontweight='bold',
+                        fontsize=label_fontsize, color='white' if value_matrix[i, j] < value_matrix.max()/2 else 'black')
+        
+        # ============ SUBPLOT 4: Convergence ============
+        ax4 = plt.subplot(2, 2, 4)
+        iterations = range(len(self.iteration_costs))
+        
+        ax4.plot(iterations, self.iteration_costs, 'b-', linewidth=2, 
+                marker='o', markersize=4, label='Trajectory Reward')
+        ax4.set_xlabel('Iteration', fontweight='bold')
+        ax4.set_ylabel('Average Reward', fontweight='bold')
+        ax4.set_title('Training Convergence', fontweight='bold')
+        ax4.grid(True, alpha=0.3)
+        ax4.legend()
+
+        plt.suptitle('ADP Solution Analysis', fontsize=base_font_size + 4, 
+                    fontweight='bold', y=0.995)
+        plt.tight_layout(rect=[0, 0, 1, 0.99])
+        
+        if save_plots:
+            filename = f'8 constellation ADP_Analysis_{figure_size}.png'
+            plt.savefig(filename, dpi=plot_dpi, bbox_inches='tight', 
+                        facecolor='white', edgecolor='none')
+            print(f"\n✓ Plots saved as: {filename}")
+            plt.show()
+            plt.close()
+        else:
+            plt.show()
+
 def run_properly_fixed_adp():
     """Run the ADP"""
     print("\n" + "#"*70)
@@ -623,5 +858,4 @@ def run_properly_fixed_adp():
 
 
 if __name__ == "__main__":
-    return None
-    #solver, V, policy = run_properly_fixed_adp()
+    solver, V, policy = run_properly_fixed_adp()

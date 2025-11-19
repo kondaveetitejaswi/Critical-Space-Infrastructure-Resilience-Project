@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Tuple, Dict, List
-from toy_mdp import ToyConstellationMDP
+from Environment.original_toy_mdp import ToyConstellationMDP
 import time
 
 ######## Basis Function ########

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from toy_mdp import ToyConstellationMDP
+from Environment.original_toy_mdp import ToyConstellationMDP
 from exact_solver import ExactDPSolver
 from Environment.FQI_LSTD_implementation import FittedQIteration, LSTD_API
 from Environment.FQI_LSTD_implementation import ADPEvaluator

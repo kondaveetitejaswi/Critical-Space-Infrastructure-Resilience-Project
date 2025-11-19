@@ -4,7 +4,8 @@ import numpy as np
 import itertools
 from collections import defaultdict
 
-# The constellation present here is the the exclusice toy model but the Helper functions used here are designed such that 
+# This was the file that was created to model the transition function adn the other helper functions specifically for the toy model constellation only
+
 @dataclass
 class ToyState:
     op_count: int
@@ -66,75 +67,75 @@ class ToyConstellationMDP:
         return min(self.allowed_health, key=lambda x: abs(x - h))
 
     def snap_state(self, state):
-        """Ensure next state's health value matches allowed discrete levels"""
+        """Ensure next state’s health value matches allowed discrete levels"""
         oc, sp, h, cov = state
         return (oc, sp, self.snap_health(h), cov)
 
-    def snap_op_count(self, oc):
-        """Ensure operational count stays within valid range"""
-        return min(max(oc, 0), max(self.op_counts))
 
     def get_operational_reward(self, state: Tuple) -> float:
-        """ Calculate the base reward based on the current operational status of the constellation.
-            We are trying to keep it general such that it can be used flexibly with constellation of any satellite size
-        """
+        """Calculate base operational reward based on constellation status"""
         oc, sp, h, cov = state
-
-        if oc == max(self.op_counts) and h == 1.0:
-            return 10 #reward for being extremely healthy
-        elif oc >= (max(self.op_counts) / 2) and h >= 0.5:
-            return 8 # reward for half satellites working with health definitely more than 0.5
-        elif oc >= (max(self.op_counts) / 2) and h < 0.5:
-            return 6 # reward for the half satellites working with health less than 0.5
-        elif oc <= (max(self.op_counts) / 2) and h < 0.5:
-            return 4 # reward for most of the satellites not working and the health less than 0.5
-        elif oc <= (max(self.op_counts) / 4) and h < 0.5:
-            return -1 # reward for barely being functional
-        elif oc == 0 and h == 0.0:
-            return -10 # reward for being complete non functional 
         
-        return 0.0
+        # Base reward for operational capability
+        if oc >= 2 and h >= 0.5:
+            return 5    # Full operational capability
+        elif oc >= 1 and h >= 0.5:
+            return 2    # Reduced but functional
+        elif oc >= 1 and h < 0.5:
+            return -1   # Barely functional
+        else:
+            return -10  # Mission failure
         
     def get_coverage_reward(self, state: Tuple) -> float:
-        """
-        The reward to be calcualted on the basis of the coverage capability
-        """           
+        """Calculate reward based on coverage capability"""
         oc, sp, h, cov = state
-
-        if oc == max(self.op_counts) and cov == 1:
-            return 5
-        elif oc >= (max(self.op_counts) / 2) and cov == 1:
-            return 3
-        elif oc <= (max(self.op_counts) / 2) and cov == 1:
-            return 2
-        elif oc == 0 and cov == 0:
-            return 0
-        else:
-            return 0
-        return 0
         
-    def calculate_total_reward(self, state: Tuple, action: str, base_action_reward: float) -> float:
-        """
-        Calculation of the total reward including both the operational reward and the coverage reward
-        """
+        if cov == 1 and oc >= 2:
+            return 3    # Full coverage with redundancy
+        elif cov == 1 and oc >= 1:
+            return 1    # Coverage but no redundancy
+        else:
+            return 0   # No coverage - mission critical failure
 
+    def calculate_total_reward(self, state: Tuple, action: str, base_action_reward: float) -> float:
+        """Calculate total reward including operational and coverage components"""
         operational_reward = self.get_operational_reward(state)
         coverage_reward = self.get_coverage_reward(state)
+        
+        # # Action-specific modifiers 
+        """
+        These immediate proactive rewards are actually useless in our implementation and cause issues in the rewarding wise.
+        """
+        # if action == "BOOST" and state[2] < 1.0:  # Reward proactive maintenance
+        #     proactive_bonus = 2
+        # elif action == "REPLACE" and state[2] == 0.0:  # Reward necessary replacements
+        #     proactive_bonus = 1
+        # elif action == "BOOST" and state[2] == 1.0:
+        #     proactive_bonus = -5  # Penalize unnecessary boosts
+        # elif action == "NO_OP" and state[0] >= 2:
+        #     proactive_bonus = 2
+        # else:
+        #     proactive_bonus = 0
+        
+        return base_action_reward + operational_reward + coverage_reward 
 
-        return (base_action_reward) + (operational_reward) + (coverage_reward)
-    
     def transition(self, state: Tuple, action: str) -> List[Tuple[float, Tuple, float]]:
         """
-        The following transition function is defined such that the this can be used for the bigger satellite constellatio as well
+        Transition function with realistic and well-separated satellite operations.
+        Each action has distinct meaning and time evolution to prevent overlap.
         """
         oc, sp, h, cov = state
+
         # Terminal state check
         if self.is_terminal(state):
             return [(1.0, state, 0)]
-        
+
+        # 1️⃣ NO_OP — Maintain current system
         if action == "NO_OP":
-            if oc == max(self.op_counts) and sp >= 0 and cov == 1:
-                total_reward = self.calculate_total_reward(state, action, 2) # the satellite is completely healthy and the base reward is 2
+            if oc == 2 and sp >= 0 and h == 1.0 and cov == 1:
+                # Perfectly healthy — stay same with reward
+                # FIX: Use calculate_total_reward for consistency
+                total_reward = self.calculate_total_reward(state, action, 2)  # Base reward of 2
                 return [(1.0, state, total_reward)]
             else:
                 degrade_prob = 0.1 if h == 1.0 else (0.3 if h == 0.5 else 0.5)
@@ -142,11 +143,13 @@ class ToyConstellationMDP:
                 stable_state = self.snap_state((oc, sp, h, cov))
                 return [
                     (1 - degrade_prob, stable_state,
-                        self.calculate_total_reward(stable_state, action, 1)),
+                    self.calculate_total_reward(stable_state, action, 1)),
                     (degrade_prob, degraded_state,
-                        self.calculate_total_reward(degraded_state, action, -2))
+                    self.calculate_total_reward(degraded_state, action, -2))
                 ]
-            
+
+
+        # 2️⃣ BOOST — Gradually improve health
         if action == "BOOST":
             if h < 1.0:
                 improvement_prob = 0.7 if h == 0.0 else 0.8
@@ -155,52 +158,57 @@ class ToyConstellationMDP:
                 next_state_fail = self.snap_state((oc, sp, h, cov))
                 return [
                     (improvement_prob, next_state_success,
-                        self.calculate_total_reward(next_state_success, action, 6)),
+                    self.calculate_total_reward(next_state_success, action, 6)),
                     (1 - improvement_prob, next_state_fail,
-                        self.calculate_total_reward(next_state_fail, action, -2))
+                    self.calculate_total_reward(next_state_fail, action, -2))
                 ]
             else:
-                return [(1.0, self.snap_state(state),
-                            self.calculate_total_reward(self.snap_state(state), action, -10))]
-            
+                # FIX: Make penalty even stronger for boosting healthy system
+                # Use calculate_total_reward but with very negative base
+                return [(1.0, self.snap_state(state), 
+                        self.calculate_total_reward(self.snap_state(state), action, -30))]  # Increased penalty
+
+        # 3️⃣ REPLACE — Replace completely failed satellite using spare
         if action == "REPLACE":
             if sp > 0 and h == 0.0:
+                # Replacement begins (partial restoration stage)
                 start_prob = 0.9
-                # FIXED: Use snap_op_count to ensure oc stays valid
-                next_oc = self.snap_op_count(oc + 1)
-                next_state_partial = self.snap_state((next_oc, sp - 1, 0.5, 1))
+                next_state_partial = self.snap_state((min(oc + 1, 2), sp - 1, 0.5, 1))
                 next_state_fail = self.snap_state((oc, sp - 1, 0.0, 0))
                 return [
                     (start_prob, next_state_partial,
-                        self.calculate_total_reward(next_state_partial, action, 8)),
+                    self.calculate_total_reward(next_state_partial, action, 8)),
                     (1 - start_prob, next_state_fail,
-                        self.calculate_total_reward(next_state_fail, action, -5))
+                    self.calculate_total_reward(next_state_fail, action, -5))
                 ]
             elif h > 0.0:
+                # Replacing a working satellite → penalize
                 return [(1.0, self.snap_state((oc, sp, h, cov)),
-                            self.calculate_total_reward(self.snap_state((oc, sp, h, cov)), action, -15))]
+         self.calculate_total_reward(self.snap_state((oc, sp, h, cov)), action, -15))]
             else:
+                # No spares → no replacement possible
                 return [(1.0, self.snap_state(state), -10)]
-            
 
+        # 4️⃣ ACTIVATE_BACKUP — Deploy extra spare to improve coverage
         if action == "ACTIVATE_BACKUP":
-            if sp > 0 and oc < max(self.op_counts):
+            if sp > 0 and oc < 2:
                 success_prob = 0.85
-                # FIXED: Use snap_op_count to ensure oc stays valid
-                next_oc = self.snap_op_count(oc + 1)
-                next_state_success = self.snap_state((next_oc, sp - 1, h, 1))
+                #next_state_success = (min(oc + 1, 2), sp - 1, h, 1)
+                next_state_success = self.snap_state((min(oc + 1, 2), sp - 1, h, 1))
                 next_state_fail = self.snap_state((oc, sp - 1, h, 0))
+
                 return [
                     (success_prob, next_state_success,
-                        self.calculate_total_reward(next_state_success, action, 5)),
+                    self.calculate_total_reward(next_state_success, action, 5)),
                     (1 - success_prob, next_state_fail,
-                        self.calculate_total_reward(next_state_fail, action, -3))
+                    self.calculate_total_reward(next_state_fail, action, -3))
                 ]
             else:
+                # Unnecessary activation when already optimal
                 return [(1.0, state, -8)]
-            
+
+        # Default fallback (should never hit)
         return [(1.0, state, -1)]
-        
 
                     
     
