@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from Environment.original_toy_mdp import ToyConstellationMDP
-from exact_solver import ExactDPSolver
+from Environment.exact_dp_solver import ExactDPSolver
 from Environment.FQI_LSTD_implementation import FittedQIteration, LSTD_API
 from Environment.FQI_LSTD_implementation import ADPEvaluator
 import time

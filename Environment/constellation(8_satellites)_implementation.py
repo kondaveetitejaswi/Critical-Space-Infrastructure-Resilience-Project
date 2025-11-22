@@ -37,8 +37,11 @@ def implement_adp_on_constellation():
     print("\n" + "="*70)
     print("COMPREHENSIVE ANALYSIS")
     print("="*70)
-    solver.create_comprehensive_analysis_constellation_level(figure_size='medium', save_plots=True, plot_dpi=150)
-
+    fig = solver.create_comprehensive_analysis_constellation_level(figure_size='medium', save_plots=True, plot_dpi=150)
+    fig.savefig("8 constellation ADP_Analysis_medium.png", bbox_inches = 'tight', 
+                facecolor = 'white', edgecolor = 'none')
+    plt.show()
+    
     # Print policy statistics
     action_counts = np.bincount(policy, minlength=len(mdp.actions))
     print("\nFinal Policy Distribution:")

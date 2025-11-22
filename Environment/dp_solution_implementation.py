@@ -3,7 +3,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from toy_mdp import ToyConstellationMDP
-from exact_solver import ExactDPSolver
+from Environment.exact_dp_solver import ExactDPSolver
 from collections import defaultdict
 import pandas as pd
 import matplotlib.patches as mpatches
@@ -667,41 +667,41 @@ def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, in
     fig = plt.figure(figsize=figsize)
     
     # 1. Enhanced Policy Heatmap
-    ax1 = plt.subplot(2, 2, 1)
-    policy_matrix = np.full((len(mdp.op_counts), 2, len(mdp.allowed_health)), -1)
+    # ax1 = plt.subplot(2, 2, 1)
+    # policy_matrix = np.full((len(mdp.op_counts), 2, len(mdp.allowed_health)), -1)
     
-    for state in mdp.states:
-        oc, sp, h, _ = state
-        if oc in mdp.op_counts and h in mdp.allowed_health:
-            idx = mdp.state_to_idx[state]
-            action_idx = policy[idx]
-            oc_idx = list(mdp.op_counts).index(oc)
-            h_idx = list(mdp.allowed_health).index(h)
-            policy_matrix[oc_idx, sp, h_idx] = action_idx
+    # for state in mdp.states:
+    #     oc, sp, h, _ = state
+    #     if oc in mdp.op_counts and h in mdp.allowed_health:
+    #         idx = mdp.state_to_idx[state]
+    #         action_idx = policy[idx]
+    #         oc_idx = list(mdp.op_counts).index(oc)
+    #         h_idx = list(mdp.allowed_health).index(h)
+    #         policy_matrix[oc_idx, sp, h_idx] = action_idx
     
-    # Show policy for healthy systems (h=1)
-    healthy_policy = policy_matrix[:, :, 1]  # Assuming h=1 is index 1
-    im1 = ax1.imshow(healthy_policy, cmap='tab10', aspect='auto')
-    ax1.set_xlabel('Spare Status')
-    ax1.set_ylabel('Operational Count')
-    ax1.set_title('Policy Heatmap (Healthy Systems)\nAction Selection Pattern')
-    ax1.set_xticks([0, 1])
-    ax1.set_xticklabels(['No Spares', 'Has Spares'])
-    ax1.set_yticks(range(len(mdp.op_counts)))
-    ax1.set_yticklabels(mdp.op_counts)
+    # # Show policy for healthy systems (h=1)
+    # healthy_policy = policy_matrix[:, :, 1]  # Assuming h=1 is index 1
+    # im1 = ax1.imshow(healthy_policy, cmap='tab10', aspect='auto')
+    # ax1.set_xlabel('Spare Status')
+    # ax1.set_ylabel('Operational Count')
+    # ax1.set_title('Policy Heatmap (Healthy Systems)\nAction Selection Pattern')
+    # ax1.set_xticks([0, 1])
+    # ax1.set_xticklabels(['No Spares', 'Has Spares'])
+    # ax1.set_yticks(range(len(mdp.op_counts)))
+    # ax1.set_yticklabels(mdp.op_counts)
     
     # Add action labels on cells (adjust font size based on figure size)
     label_fontsize = max(6, base_font_size - 2)
-    for i in range(len(mdp.op_counts)):
-        for j in range(2):
-            if healthy_policy[i, j] >= 0:
-                action_name = mdp.actions[int(healthy_policy[i, j])]
-                ax1.text(j, i, action_name, ha='center', va='center', 
-                        fontsize=label_fontsize, fontweight='bold', color='white')
+    # for i in range(len(mdp.op_counts)):
+    #     for j in range(2):
+    #         if healthy_policy[i, j] >= 0:
+    #             action_name = mdp.actions[int(healthy_policy[i, j])]
+    #             ax1.text(j, i, action_name, ha='center', va='center', 
+    #                     fontsize=label_fontsize, fontweight='bold', color='white')
     
         
     # 2. Enhanced Convergence Analysis
-    ax4 = plt.subplot(2, 2, 2)
+    ax4 = plt.subplot(2, 2, 3)
     if hasattr(solver, 'delta_history') and solver.delta_history:
         deltas = np.array(solver.delta_history)
         iterations = np.arange(1, len(deltas) + 1)
@@ -725,7 +725,7 @@ def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, in
 
     
     # 3. Policy Action Distribution
-    ax6 = plt.subplot(2, 2, 3)
+    ax6 = plt.subplot(2, 2, 1)
     action_counts = defaultdict(int)
     for state_idx, action_idx in enumerate(policy):
         action = mdp.actions[action_idx]
@@ -749,7 +749,7 @@ def analyze_dp_solution(figure_size='medium', save_plots=False, plot_dpi=100, in
                 f'{pct:.1f}%', ha='center', va='bottom', fontweight='bold')
     
     # 4. Value Function Heatmap by State Dimensions
-    ax7 = plt.subplot(2, 2, 4)
+    ax7 = plt.subplot(2, 2, 2)
     # Create a 2D representation of values
     value_matrix = np.zeros((len(mdp.op_counts), 2))
     for oc_idx, oc in enumerate(mdp.op_counts):

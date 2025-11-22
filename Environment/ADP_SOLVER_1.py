@@ -537,39 +537,39 @@ class ADPSolver:
         fig = plt.figure(figsize=figsize)
 
         # 1. Policy Heatmap
-        ax1 = plt.subplot(2, 2, 1)
-        policy_matrix = np.full((len(self.mdp.op_counts), 2, len(self.mdp.allowed_health)), -1)
+        # ax1 = plt.subplot(2, 2, 1)
+        # policy_matrix = np.full((len(self.mdp.op_counts), 2, len(self.mdp.allowed_health)), -1)
         
-        for state in self.mdp.states:
-            oc, sp, h, _ = state
-            if oc in self.mdp.op_counts and h in self.mdp.allowed_health:
-                idx = self.mdp.state_to_idx[state]
-                action_idx = self.policy[idx]
-                oc_idx = list(self.mdp.op_counts).index(oc)
-                h_idx = list(self.mdp.allowed_health).index(h)
-                policy_matrix[oc_idx, sp, h_idx] = action_idx
+        # for state in self.mdp.states:
+        #     oc, sp, h, _ = state
+        #     if oc in self.mdp.op_counts and h in self.mdp.allowed_health:
+        #         idx = self.mdp.state_to_idx[state]
+        #         action_idx = self.policy[idx]
+        #         oc_idx = list(self.mdp.op_counts).index(oc)
+        #         h_idx = list(self.mdp.allowed_health).index(h)
+        #         policy_matrix[oc_idx, sp, h_idx] = action_idx
         
-        # Show policy for healthy systems (h=1)
-        healthy_policy = policy_matrix[:, :, 1]
-        im1 = ax1.imshow(healthy_policy, cmap='tab10', aspect='auto')
-        ax1.set_xlabel('Spare Status')
-        ax1.set_ylabel('Operational Count')
-        ax1.set_title('ADP Policy Heatmap (Healthy Systems)')
-        ax1.set_xticks([0, 1])
-        ax1.set_xticklabels(['No Spares', 'Has Spares'])
-        ax1.set_yticks(range(len(self.mdp.op_counts)))
-        ax1.set_yticklabels(self.mdp.op_counts)
+        # # Show policy for healthy systems (h=1)
+        # healthy_policy = policy_matrix[:, :, 1]
+        # im1 = ax1.imshow(healthy_policy, cmap='tab10', aspect='auto')
+        # ax1.set_xlabel('Spare Status')
+        # ax1.set_ylabel('Operational Count')
+        # ax1.set_title('ADP Policy Heatmap (Healthy Systems)')
+        # ax1.set_xticks([0, 1])
+        # ax1.set_xticklabels(['No Spares', 'Has Spares'])
+        # ax1.set_yticks(range(len(self.mdp.op_counts)))
+        # ax1.set_yticklabels(self.mdp.op_counts)
         
         label_fontsize = max(6, base_font_size - 2)
-        for i in range(len(self.mdp.op_counts)):
-            for j in range(2):
-                if healthy_policy[i, j] >= 0:
-                    action_name = self.mdp.actions[int(healthy_policy[i, j])]
-                    ax1.text(j, i, action_name, ha='center', va='center', 
-                            fontsize=label_fontsize, fontweight='bold', color='white')
+        # for i in range(len(self.mdp.op_counts)):
+        #     for j in range(2):
+        #         if healthy_policy[i, j] >= 0:
+        #             action_name = self.mdp.actions[int(healthy_policy[i, j])]
+        #             ax1.text(j, i, action_name, ha='center', va='center', 
+        #                     fontsize=label_fontsize, fontweight='bold', color='white')
                     
         # 2. Policy Action Distribution
-        ax3 = plt.subplot(2, 2, 2)
+        ax3 = plt.subplot(2, 2, 1)
         action_counts = defaultdict(int)
         for state_idx, action_idx in enumerate(self.policy):
             action = self.mdp.actions[action_idx]
@@ -591,7 +591,7 @@ class ADPSolver:
                     f'{pct:.1f}%', ha='center', va='bottom', fontweight='bold')
             
         # 3. State Value Heatmap
-        ax4 = plt.subplot(2, 2, 3)
+        ax4 = plt.subplot(2, 2, 2)
         value_matrix = np.zeros((len(self.mdp.op_counts), 2))
         for oc_idx, oc in enumerate(self.mdp.op_counts):
             for sp in [0, 1]:
@@ -675,52 +675,52 @@ class ADPSolver:
         n_health = len(self.mdp.allowed_health)
 
         # ============ SUBPLOT 1: Policy Heatmap ============
-        ax1 = plt.subplot(2, 2, 1)
+        # ax1 = plt.subplot(2, 2, 1)
         
-        # Create matrix with CORRECT dimensions
-        policy_matrix = np.full((n_ops, n_spares, n_health), -1, dtype=int)
+        # # Create matrix with CORRECT dimensions
+        # policy_matrix = np.full((n_ops, n_spares, n_health), -1, dtype=int)
         
-        for state in self.mdp.states:
-            oc, sp, h, _ = state
-            try:
-                oc_idx = list(self.mdp.op_counts).index(oc)
-                sp_idx = list(self.mdp.spares).index(sp)
-                h_idx = list(self.mdp.allowed_health).index(h)
+        # for state in self.mdp.states:
+        #     oc, sp, h, _ = state
+        #     try:
+        #         oc_idx = list(self.mdp.op_counts).index(oc)
+        #         sp_idx = list(self.mdp.spares).index(sp)
+        #         h_idx = list(self.mdp.allowed_health).index(h)
                 
-                state_idx = self.mdp.state_to_idx[state]
-                action_idx = self.policy[state_idx]
+        #         state_idx = self.mdp.state_to_idx[state]
+        #         action_idx = self.policy[state_idx]
                 
-                policy_matrix[oc_idx, sp_idx, h_idx] = action_idx
-            except (ValueError, KeyError):
-                continue
+        #         policy_matrix[oc_idx, sp_idx, h_idx] = action_idx
+        #     except (ValueError, KeyError):
+        #         continue
         
-        # Show policy for healthiest systems
-        healthy_policy = policy_matrix[:, :, -1]  # Last index = max health
-        im1 = ax1.imshow(healthy_policy, cmap='tab10', aspect='auto', 
-                        vmin=0, vmax=len(self.mdp.actions)-1)
+        # # Show policy for healthiest systems
+        # healthy_policy = policy_matrix[:, :, -1]  # Last index = max health
+        # im1 = ax1.imshow(healthy_policy, cmap='tab10', aspect='auto', 
+        #                 vmin=0, vmax=len(self.mdp.actions)-1)
         
-        ax1.set_xlabel('Spare Count', fontweight='bold')
-        ax1.set_ylabel('Operational Count', fontweight='bold')
-        ax1.set_title('ADP Policy (Healthy Systems)', fontweight='bold')
+        # ax1.set_xlabel('Spare Count', fontweight='bold')
+        # ax1.set_ylabel('Operational Count', fontweight='bold')
+        # ax1.set_title('ADP Policy (Healthy Systems)', fontweight='bold')
         
-        ax1.set_xticks(range(n_spares))
-        ax1.set_xticklabels([str(sp) for sp in self.mdp.spares])
-        ax1.set_yticks(range(n_ops))
-        ax1.set_yticklabels([str(oc) for oc in self.mdp.op_counts])
+        # ax1.set_xticks(range(n_spares))
+        # ax1.set_xticklabels([str(sp) for sp in self.mdp.spares])
+        # ax1.set_yticks(range(n_ops))
+        # ax1.set_yticklabels([str(oc) for oc in self.mdp.op_counts])
         
-        # Add action labels
-        for i in range(n_ops):
-            for j in range(n_spares):
-                if healthy_policy[i, j] >= 0:
-                    action_name = self.mdp.actions[int(healthy_policy[i, j])]
-                    short = action_name[:2].upper()  # First 2 chars
-                    ax1.text(j, i, short, ha='center', va='center', 
-                            fontsize=label_fontsize, fontweight='bold', 
-                            color='white', bbox=dict(boxstyle='round,pad=0.3', 
-                                                facecolor='black', alpha=0.7))
+        # # Add action labels
+        # for i in range(n_ops):
+        #     for j in range(n_spares):
+        #         if healthy_policy[i, j] >= 0:
+        #             action_name = self.mdp.actions[int(healthy_policy[i, j])]
+        #             short = action_name[:2].upper()  # First 2 chars
+        #             ax1.text(j, i, short, ha='center', va='center', 
+        #                     fontsize=label_fontsize, fontweight='bold', 
+        #                     color='white', bbox=dict(boxstyle='round,pad=0.3', 
+        #                                         facecolor='black', alpha=0.7))
         
         # ============ SUBPLOT 2: Action Distribution ============
-        ax2 = plt.subplot(2, 2, 2)
+        ax2 = plt.subplot(2, 2, 1)
         action_counts = defaultdict(int)
         
         for action_idx in self.policy:
@@ -749,7 +749,7 @@ class ADPSolver:
                     fontweight='bold', fontsize=label_fontsize)
         
         # ============ SUBPLOT 3: State Value Heatmap ============
-        ax3 = plt.subplot(2, 2, 3)
+        ax3 = plt.subplot(2, 2, 2)
         value_matrix = np.zeros((n_ops, n_spares))
         
         for i, oc in enumerate(self.mdp.op_counts):
@@ -785,30 +785,22 @@ class ADPSolver:
                         fontsize=label_fontsize, color='white' if value_matrix[i, j] < value_matrix.max()/2 else 'black')
         
         # ============ SUBPLOT 4: Convergence ============
-        ax4 = plt.subplot(2, 2, 4)
-        iterations = range(len(self.iteration_costs))
+        # ax4 = plt.subplot(2, 2, 4)
+        # iterations = range(len(self.iteration_costs))
         
-        ax4.plot(iterations, self.iteration_costs, 'b-', linewidth=2, 
-                marker='o', markersize=4, label='Trajectory Reward')
-        ax4.set_xlabel('Iteration', fontweight='bold')
-        ax4.set_ylabel('Average Reward', fontweight='bold')
-        ax4.set_title('Training Convergence', fontweight='bold')
-        ax4.grid(True, alpha=0.3)
-        ax4.legend()
+        # ax4.plot(iterations, self.iteration_costs, 'b-', linewidth=2, 
+        #         marker='o', markersize=4, label='Trajectory Reward')
+        # ax4.set_xlabel('Iteration', fontweight='bold')
+        # ax4.set_ylabel('Average Reward', fontweight='bold')
+        # ax4.set_title('Training Convergence', fontweight='bold')
+        # ax4.grid(True, alpha=0.3)
+        # ax4.legend()
 
         plt.suptitle('ADP Solution Analysis', fontsize=base_font_size + 4, 
                     fontweight='bold', y=0.995)
         plt.tight_layout(rect=[0, 0, 1, 0.99])
         
-        if save_plots:
-            filename = f'8 constellation ADP_Analysis_{figure_size}.png'
-            plt.savefig(filename, dpi=plot_dpi, bbox_inches='tight', 
-                        facecolor='white', edgecolor='none')
-            print(f"\n✓ Plots saved as: {filename}")
-            plt.show()
-            plt.close()
-        else:
-            plt.show()
+        return fig
 
 def run_properly_fixed_adp():
     """Run the ADP"""
