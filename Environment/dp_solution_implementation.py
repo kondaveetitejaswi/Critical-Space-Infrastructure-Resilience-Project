@@ -2,8 +2,8 @@ import sys
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from toy_mdp import ToyConstellationMDP
-from Environment.exact_dp_solver import ExactDPSolver
+from original_toy_mdp import ToyConstellationMDP
+from exact_dp_solver import ExactDPSolver
 from collections import defaultdict
 import pandas as pd
 import matplotlib.patches as mpatches

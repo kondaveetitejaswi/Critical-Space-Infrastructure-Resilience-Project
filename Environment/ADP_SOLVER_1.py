@@ -1,5 +1,5 @@
 import numpy as np
-from toy_mdp import ToyConstellationMDP
+from original_toy_mdp import ToyConstellationMDP
 from collections import defaultdict
 import matplotlib.pyplot as plt
 import warnings
