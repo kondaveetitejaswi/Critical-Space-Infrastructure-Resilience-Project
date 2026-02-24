@@ -6,17 +6,19 @@ import numpy as np
 
 @dataclass(frozen=True)
 class GNSSState:
-    N_operational: int
-    N_spare: int
-    mean_health_bin: int
-    four_cov_bin: int
-    dop_bin: int
-    cno_bin: int
-    age_bin: int
+    sats_per_plane: Tuple[int, ...]
+    spares: int
+    health: float
+    age: int
 
-    def to_tuple(self):
-        return (self.N_operational, self.N_spare, self.mean_health_bin,
-                self.four_cov_bin, self.dop_bin, self.cno_bin, self.age_bin)
+    def total_operational(self):
+        return sum(self.sats_per_plane)
+    
+    def discretize_health(self, h):
+        return round(h, 1)  # 0.0, 0.1, ... , 1.0
+
+    def discretize_age(self, age):
+        return min(age, self.max_age)
 
 
 
@@ -24,48 +26,37 @@ class GNSSState:
 
 class GNSSConstellationMDP:
 
-    def __init__(self):
+    def __init__(self,
+        n_planes = 6,
+        sats_per_plane = 6,
+        max_spares = 10):
 
-        # Discretized state space parameters
-        self.max_sats = 32
-        self.max_spares = 10
+        # geometry
+        self.n_planes = n_planes
+        self.capacity_per_plane = sats_per_plane
+        self.max_sats = n_planes * sats_per_plane
+        self.max_spares = max_spares
+        self.min_planes_required = 4
 
-        self.health_bins = list(range(0, 11))     # 0..10
-        self.coverage_bins = list(range(0, 11))   # 0..10 (0–100%)
-        self.dop_bins = list(range(0, 11))        # coarse
-        self.cno_bins = list(range(0, 11))
-        self.age_bins = list(range(0, 60))        # time steps with each time step referring to 3months of the satellite life span; so 60 timesteps = 15 years (typical lifetime for the GNSS satellites)
-        # Actions
-        self.actions = [
-            "NO_OP",
-            "LAUNCH_1",
-            "ACTIVATE_SPARE",
-            "RETIRE_SAT",
-            "REBALANCE_PLANE"
-        ]
-
-        # Failure model parameters
+        #aging & failure
+        self.health_decay = 0.02
         self.p0 = 0.002
-        self.alpha = 0.01
-        self.beta = 0.001
+        self.alpha = 0.015
+        self.beta = 0.4
+        self.max_age = 50
 
-        # Health degradation per step
-        self.health_decay = 0.05
-
-        # Reward weights
-        self.w1 = 5.0
-        self.w2 = 3.0
-        self.w3 = 2.0
-        self.w4 = 4.0
-
-        # Action costs
-        self.action_cost = {
-            "NO_OP": 0.0,
-            "LAUNCH_1": 1.0,
-            "ACTIVATE_SPARE": 0.2,
-            "RETIRE_SAT": 0.1,
-            "REBALANCE_PLANE": 0.4
+        #costs
+        self.action_costs = {
+            "NO_OP": 0,
+            "LAUNCH_1": 10.0,
+            "ACTIVATE_SPARE": 2.0,
+            "RETIRE_SAT": 1.0,
+            "REBALANCE_PLANE": 3.0
         }
+
+        self.service_penalty = 100.0
+        self.actions = list(self.action_costs.keys())
+
 
         # --- Weibull PH parameters ---
         self.weibull_k = 4.5        # shape (wear-out regime)
@@ -76,7 +67,58 @@ class GNSSConstellationMDP:
         self.beta_dop = 1.0
         self.beta_cov = 2.5
         self.beta_cno = 1.5
+ 
+    def is_terminal(self, state: GNSSState):
+        return state.N_operational == 0
+    
+    def apply_failures(self, planes, p_fail):
+        new_planes = []
+        for n in planes:
+            failures = np.random.binomial(n, p_fail)
+            new_planes.append(max(n - failures, 0))
+        return tuple(new_planes)
+    
+    def service_available(self, planes):
+        planes_with_geometry = sum(1 for n in planes if n >= 3)
+        return planes_with_geometry >= self.min_planes_required
+    
+    def weakest_plane(self, planes):
+        return np.argmin(planes)
+    
+    def strongest_planes(self, planes):
+        return int(np.argmax(planes))
+    
+    def apply_action(self, state:GNSSState, action: str):
+        planes = list(state.sats_per_plane)
+        spares = state.spares
 
+        if action == "ACTIVATE_SPARE" and spares > 0:
+            weakest = self.weakest_plane(planes)
+            if planes[weakest] < self.capacity_per_plane:
+                planes[weakest] += 1
+                spares -= 1
+        elif action == "RETIRE_SAT":
+            strongest = self.strongest_planes(planes)
+            if planes[strongest] > 0:
+                planes[strongest] -= 1
+                spares += 1
+
+        elif action == "LAUNCH_1":
+            spares = min(spares + 1, self.max_spares)
+
+        elif action == "REBALANCE_PLANE":
+            strongest = self.strongest_planes(planes)
+            weakest = self.weakest_plane(planes)
+            if planes[strongest] > 0 and planes[weakest] < self.capacity_per_plane:
+                planes[strongest] -= 1
+                planes[weakest] += 1
+
+        elif action == "NO_OP":
+            pass
+
+        return tuple(planes), spares
+    
+    
     # PDS computation
 
     def post_decision_state(self, state: GNSSState, action: str):
@@ -177,24 +219,26 @@ class GNSSConstellationMDP:
 
         Nop, Ns, h_bin, age = pds
 
+        # -----------------------------
+        # 1️⃣ Health degradation
+        # -----------------------------
         mean_health = h_bin / 10.0
-
-        # ---- Failures ----
-        p_fail = self.compute_failure_probability(mean_health, age)
-        failures = np.random.binomial(Nop, p_fail)
-        Nop_next = max(Nop - failures, 0)
-
-        # ---- Health degradation ----
         degradation_noise = np.random.normal(0, 0.01)
-        new_health = np.clip(mean_health - self.health_decay + degradation_noise, 0.0, 1.0)
+
+        new_health = np.clip(
+            mean_health - self.health_decay + degradation_noise,
+            0.0, 1.0
+        )
         new_h_bin = int(round(new_health * 10))
 
-        # ---- KPI Evaluation ----
+        # -----------------------------
+        # 2️⃣ KPI evaluation (before failures)
+        # -----------------------------
         cno_db = self.evaluate_cno_db(new_health)
         cno_bin = int(np.clip(round((cno_db - 30) / 20 * 10), 0, 10))
 
         p_vis = self.visibility_probability(cno_db)
-        N_vis = self.sample_visibility_satellites(Nop_next, p_vis)
+        N_vis = self.sample_visibility_satellites(Nop, p_vis)
 
         coverage = self.evaluate_coverage(N_vis)
         cov_bin = int(coverage * 10)
@@ -202,8 +246,32 @@ class GNSSConstellationMDP:
         dop_value = self.evaluate_dop(N_vis)
         dop_bin = int(np.clip(round(dop_value), 0, 10))
 
+        # -----------------------------
+        # 3️⃣ Build temporary state for PH
+        # -----------------------------
+        temp_state = GNSSState(
+            N_operational=Nop,
+            N_spare=Ns,
+            mean_health_bin=new_h_bin,
+            four_cov_bin=cov_bin,
+            dop_bin=dop_bin,
+            cno_bin=cno_bin,
+            age_bin=age
+        )
+
+        # -----------------------------
+        # 4️⃣ Proportional Hazard failure
+        # -----------------------------
+        p_fail = self.compute_failure_probability(temp_state)
+        failures = np.random.binomial(Nop, p_fail)
+
+        Nop_next = max(Nop - failures, 0)
+
         age_next = min(age, max(self.age_bins))
 
+        # -----------------------------
+        # 5️⃣ Return next state
+        # -----------------------------
         return GNSSState(
             Nop_next,
             Ns,
@@ -213,7 +281,6 @@ class GNSSConstellationMDP:
             cno_bin,
             age_next
         )
-
     # Reward function
 
     def coverage_reward(self, cov_bin):
@@ -258,8 +325,7 @@ class GNSSConstellationMDP:
 
     # Terminal condition (optional)
 
-    def is_terminal(self, state: GNSSState):
-        return state.N_operational == 0
+
     
 mdp = GNSSConstellationMDP()
 
@@ -295,3 +361,6 @@ state = GNSSState(
 )
 
 print("\nFailure evolution test:")
+for t in range(51):
+    _, state, _ = mdp.transition(state, "NO_OP")[0]
+    print(f"Time step {t}: Operational={state.N_operational}, Age={state.age_bin}, health={state.mean_health_bin/10.0:.2f}, cov={state.four_cov_bin/10.0:.2f}, dop={state.dop_bin/10.0:.2f}, cno={state.cno_bin/10.0:.2f}")
