@@ -14,11 +14,11 @@ class GNSSState:
     def total_operational(self):
         return sum(self.sats_per_plane)
     
-    def discretize_health(self, h):
-        return round(h, 1)  # 0.0, 0.1, ... , 1.0
+    # def discretize_health(self, h):
+    #     return round(h, 1)  # 0.0, 0.1, ... , 1.0
 
-    def discretize_age(self, age):
-        return min(age, self.max_age)
+    # def discretize_age(self, age):
+    #     return min(age, self.max_age)
 
 
 
@@ -40,9 +40,6 @@ class GNSSConstellationMDP:
 
         #aging & failure
         self.health_decay = 0.02
-        self.p0 = 0.002
-        self.alpha = 0.015
-        self.beta = 0.4
         self.max_age = 50
 
         #costs
@@ -54,33 +51,23 @@ class GNSSConstellationMDP:
             "REBALANCE_PLANE": 3.0
         }
 
-        self.service_penalty = 100.0
-        self.actions = list(self.action_costs.keys())
 
 
         # --- Weibull PH parameters ---
         self.weibull_k = 4.5        # shape (wear-out regime)
         self.weibull_eta = 60.0     # scale (design life in steps)
 
-        # Covariate coefficients (tune carefully!)
+        # Covariate coefficients
         self.beta_health = 2.0
         self.beta_dop = 1.0
-        self.beta_cov = 2.5
-        self.beta_cno = 1.5
+        self.beta_geom = 1.5
+
+        self.actions = list(self.action_costs.keys())
  
     def is_terminal(self, state: GNSSState):
-        return state.N_operational == 0
+        return state.total_operational() == 0
     
-    def apply_failures(self, planes, p_fail):
-        new_planes = []
-        for n in planes:
-            failures = np.random.binomial(n, p_fail)
-            new_planes.append(max(n - failures, 0))
-        return tuple(new_planes)
     
-    def service_available(self, planes):
-        planes_with_geometry = sum(1 for n in planes if n >= 3)
-        return planes_with_geometry >= self.min_planes_required
     
     def weakest_plane(self, planes):
         return np.argmin(planes)
@@ -118,7 +105,27 @@ class GNSSConstellationMDP:
 
         return tuple(planes), spares
     
-    
+    # KPI model 
+    def compute_kpis(self, planes, health):
+        total = sum(planes)
+
+        cno = 45 - 8*(1 - health) + np.random.normal(0, 1.5)
+
+        p_vis = 1 / (1 + np.exp(-(cno - 38)))
+
+        visible = np.random.binomial(total, p_vis)
+
+        planes_ok = sum(1 for p in planes if p >= 3)
+        coverage = 1 if planes_ok >= self.min_planes_required else 0
+
+        if visible < 4:
+            dop = 10.0
+
+        else:
+            dop = 6.0 / np.sqrt(visible) + np.random.normal(0, 0.5)
+            dop = np.clip(dop, 1.0, 10.0)
+        
+        return coverage, dop, cno
     # PDS computation
 
     def post_decision_state(self, state: GNSSState, action: str):
