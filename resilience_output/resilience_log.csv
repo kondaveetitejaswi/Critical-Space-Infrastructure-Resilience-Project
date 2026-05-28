@@ -1,0 +1,11 @@
+﻿episode,step,phase,action,coverage_pct,good_coverage_pct,avg_pdop,avg_cn0_dbhz,operational_sats,spares,pending_launches,step_reward,under_attack,attack_description
+1,1,LOW,NO_OP,100.0,100.0,1.6028,47.26,32,8,0,120.0,0,None
+1,2,LOW,NO_OP,100.0,100.0,1.5753,47.24,30,8,0,-80.0,1,"[LOW  ] Spoof -> ['GPS BIII-7  (PRN 01)', 'GPS BIII-4  (PRN 14)']"
+1,3,LOW,NO_OP,100.0,100.0,1.5918,47.24,30,8,0,120.0,0,None
+1,4,MEDIUM,NO_OP,100.0,100.0,1.842,47.28,30,8,0,120.0,0,None
+1,5,MEDIUM,NO_OP,100.0,100.0,1.7613,47.26,30,8,0,120.0,0,None
+1,6,MEDIUM,NO_OP,100.0,100.0,1.6231,47.23,30,8,0,120.0,0,None
+1,7,HIGH,ACTIVATE_SPARE,100.0,100.0,1.6094,47.23,30,7,0,-245.0,1,[LOW  ] Spoof -> ['GPS BIII-4  (PRN 14)']
+1,8,HIGH,ACTIVATE_SPARE,100.0,100.0,1.6998,47.26,31,6,0,-45.0,0,None
+1,9,HIGH,RETIRE_SATELLITE,100.0,100.0,1.6597,47.25,31,6,0,135.0,0,None
+1,10,HIGH,NO_OP,100.0,100.0,1.5701,47.22,31,6,0,120.0,0,None

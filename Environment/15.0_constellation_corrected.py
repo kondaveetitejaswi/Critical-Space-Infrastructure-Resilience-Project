@@ -27,7 +27,7 @@ GPS_PARAMS = ConstellationParameters(
     celestrak_url='https://celestrak.org/NORAD/elements/gps-ops.txt'
 )
 
-def get_threat_phase(episode_step: int, max_steps: int = 10) -> str:
+def get_threat_phase(episode_step: int, max_steps: int = 500) -> str:
     if episode_step <= max_steps * 0.33:
         return "LOW"
     elif episode_step <= max_steps * 0.66:
@@ -54,7 +54,7 @@ class SkyfieldConstellationState:
     jammer_persistence_steps: int  = 0
     threat_phase:           str    = "LOW"
     pending_launches:       Tuple  = () 
-    last_action:            str = "NO_OP"
+    was_under_attack:       bool   = False
 
     def get_operational_count(self) -> int:
         return sum(1 for s in self.satellites
@@ -156,100 +156,93 @@ class SkyfieldPhysicsEngine:
         }
 
     def get_valid_actions(self, state: SkyfieldConstellationState) -> List[str]:
+        """Gate each action on its actual feasibility to prevent invalid/wasteful selections."""
         valid = ["NO_OP"]
-        sats, sp = state.satellites, state.spares_available
-        if any(0.0 < s.health < 0.4 and s.launch_countdown == 0 for s in sats):
-            valid.append("RETIRE_SATELLITE")
-        if sp > 0 and any(s.health <= 0.0 for s in sats):
+
+        # ACTIVATE_SPARE only if spares exist AND there is a slot to fill
+        dead_slots = sum(1 for s in state.satellites if s.health <= 0.0)
+        if state.spares_available > 0 and dead_slots > 0:
             valid.append("ACTIVATE_SPARE")
-        if sp < self.params.spare_capacity and len(state.pending_launches) < 5:
+
+        # LAUNCH_SATELLITE only when spare pool is below half capacity
+        if state.spares_available < (self.params.spare_capacity // 2):
             valid.append("LAUNCH_SATELLITE")
-        if (sp == 0 and any(s.health <= 0.0 for s in sats)
-                and sum(1 for s in sats if s.health > 0.8) > 4):
+
+        # RETIRE_SATELLITE only if there are degraded (but not dead) satellites to retire
+        retireable = any(0.0 < s.health < 0.4 and s.launch_countdown == 0
+                         for s in state.satellites)
+        if retireable:
+            valid.append("RETIRE_SATELLITE")
+
+        # REBALANCE_ORBITS only if there is a healthy donor AND a plane crisis exists
+        healthy_donors = any(s.health > 0.8 and s.launch_countdown == 0
+                             for s in state.satellites)
+        if healthy_donors and self.is_plane_crisis(state):
             valid.append("REBALANCE_ORBITS")
+
         return valid
 
     def apply_action(self, state, action):
         sats    = list(state.satellites)
         spares  = state.spares_available
         pending = list(state.pending_launches)
-        cost, cov_boost = 0.0, 0.0
-        affected_sat = None
-        affected_plane = None
+        cov_boost = 0.0
+
         if action == "RETIRE_SATELLITE":
             cands = [i for i,s in enumerate(sats)
                      if 0.0 < s.health < 0.4 and s.launch_countdown == 0]
             if cands:
                 idx = min(cands, key=lambda i: sats[i].health)
                 s = sats[idx]
-                affected_sat = s
-                affected_plane = s.orbital_plane
                 sats[idx] = SkyfieldSatelliteState(
                     s.sat_name, s.satellite_obj, 0.0, s.age_days,
                     s.orbital_plane, 0, False)
-                cost = 5.0
                 print(f"  [ACTION] RETIRE  -> {s.sat_name} (health {s.health:.2f})")
 
         elif action == "ACTIVATE_SPARE":
             dead = [i for i,s in enumerate(sats) if s.health <= 0.0]
             if dead and spares > 0:
-                dead = [i for i,s in enumerate(sats) if s.health <= 0.0]
-                if dead:
-                    # choose dead satellite in weakest plane
-                    plane_health = defaultdict(list)
-                    for i, s in enumerate(sats):
-                        plane_health[s.orbital_plane].append(s.health)
-
-                    weakest_plane = min(
-                        plane_health.keys(),
-                        key=lambda p: sum(h > 0.5 for h in plane_health[p])
-                    )
-
-                    candidates = [i for i in dead if sats[i].orbital_plane == weakest_plane]
-                    idx = candidates[0] if candidates else dead[0]
-
-                    s = sats[idx]
-                    affected_sat = s
-                    affected_plane = s.orbital_plane
+                idx = dead[0]; s = sats[idx]
                 sats[idx] = SkyfieldSatelliteState(
                     s.sat_name, s.satellite_obj, 1.0, 0.0,
                     s.orbital_plane, 0, False)
-                spares -= 1; cost = 20.0
-                cov_boost = 10.0
+                spares -= 1
                 print(f"  [ACTION] ACTIVATE SPARE -> {s.sat_name} | Pool: {spares}")
 
         elif action == "LAUNCH_SATELLITE":
             pending.append(self.params.launch_delay_steps)
-            cost = 30.0
             print(f"  [ACTION] LAUNCH -> In-transit ({self.params.launch_delay_steps} steps) | "
                   f"In-flight: {len(pending)}")
 
         elif action == "REBALANCE_ORBITS":
             healthy = [i for i,s in enumerate(sats)
                        if s.health > 0.8 and s.launch_countdown == 0]
-            if healthy:
-                plane_health = defaultdict(list)
-                for i, s in enumerate(sats):
-                    plane_health[s.orbital_plane].append((i, s.health))
+            # Count how many planes are in crisis BEFORE rebalance
+            planes_before = defaultdict(list)
+            for s in sats:
+                planes_before[s.orbital_plane].append(s.health)
+            n_crisis_planes = sum(
+                1 for hl in planes_before.values()
+                if sum(1 for h in hl if h > 0.5) < 3)
 
-                weakest = min(plane_health, key=lambda p: sum(h > 0.5 for _,h in plane_health[p]))
-                strongest = max(plane_health, key=lambda p: sum(h > 0.8 for _,h in plane_health[p]))
-
-                donor_candidates = [i for i,h in plane_health[strongest] if h > 0.8]
-
-                if donor_candidates:
-                    idx = donor_candidates[0]
-                    s = sats[idx]
-
-                    affected_sat = s
-                    affected_plane = (strongest, weakest)
+            if healthy and n_crisis_planes > 0:
+                idx = healthy[0]; s = sats[idx]
                 sats[idx] = SkyfieldSatelliteState(
-                    s.sat_name, s.satellite_obj, s.health-0.25, s.age_days,
+                    s.sat_name, s.satellite_obj, s.health - 0.25, s.age_days,
                     s.orbital_plane, 0, False)
-                cost, cov_boost = 30.0, 12.0
-                print(f"  [ACTION] REBALANCE -> Donor {s.sat_name} | Boost: {cov_boost}%")
+                # cov_boost only when it genuinely resolves a plane crisis
+                cov_boost = 4.0
+                print(f"  [ACTION] REBALANCE -> Donor {s.sat_name} | Crisis planes resolved: {n_crisis_planes}")
+            elif healthy:
+                # No crisis: rebalance is wasteful — apply cost but no boost
+                idx = healthy[0]; s = sats[idx]
+                sats[idx] = SkyfieldSatelliteState(
+                    s.sat_name, s.satellite_obj, s.health - 0.25, s.age_days,
+                    s.orbital_plane, 0, False)
+                cov_boost = 0.0
+                print(f"  [ACTION] REBALANCE (no crisis) -> Donor {s.sat_name} | No boost applied")
 
-        return sats, spares, cost, cov_boost, tuple(pending), affected_sat, affected_plane
+        return sats, spares, cov_boost, tuple(pending)
 
 
     def _apply_attacks(self, sats, iteration):
@@ -261,12 +254,12 @@ class SkyfieldPhysicsEngine:
 
         if phase == "LOW":
             if roll < 0.20 and len(active_idx) >= 1:
-                n = np.random.randint(1, min(4, len(active_idx)) + 1)
+                n = np.random.randint(1, min(4, len(active_idx)+1))
                 targets = np.random.choice(active_idx, n, replace=False)
                 for idx in targets:
                     s = sats[idx]
                     sats[idx] = SkyfieldSatelliteState(
-                        s.sat_name, s.satellite_obj, 0.10, s.age_days,
+                        s.sat_name, s.satellite_obj, np.random.uniform(0.01, 0.1), s.age_days,
                         s.orbital_plane, s.launch_countdown, True)
                 attack_log.append(
                     f"[LOW  ] Spoof -> {[sats[i].sat_name for i in targets]}")
@@ -285,7 +278,7 @@ class SkyfieldPhysicsEngine:
                 for idx in targets:
                     s = sats[idx]
                     sats[idx] = SkyfieldSatelliteState(
-                        s.sat_name, s.satellite_obj, 0.05, s.age_days,
+                        s.sat_name, s.satellite_obj, np.random.uniform(0.01, 0.1), s.age_days,
                         s.orbital_plane, s.launch_countdown, True)
                 attack_log.append(
                     f"[MED  ] Coordinated Spoof -> {n} sats: "
@@ -341,30 +334,24 @@ class SkyfieldPhysicsEngine:
             if operational_in_plane < 3:
                 return True
         return False
-    
-    def _compute_plane_distribution(self, state):
-        planes = defaultdict(int)
-        for s in state.satellites:
-            if s.health > 0.5:
-                planes[s.orbital_plane] += 1
-        return planes
 
     def step_physics(self, state, action, iteration=1, delta_days=7.0):
-        kpis_before = self.compute_kpis(state)
-        plane_counts_before = self._compute_plane_distribution(state)
-        sats, spares, action_cost, cov_boost, pending, affected_sat, affected_plane = \
+        sats, spares, cov_boost, pending = \
             self.apply_action(state, action)
 
         new_time = self.ts.tt_jd(state.current_time.tt + delta_days)
 
-        decay = (0.05 / (self.params.design_life_years * 365)) * delta_days
-
-        beta = 1.5  
-        eta = self.params.design_life_years * 365.0  # Scale parameter (design life in days)
+        # --- UNIFIED PROPORTIONAL HAZARD MODEL (Weibull baseline) ---
+        # All health degradation is now PHM-driven; the old linear noise is removed.
+        # beta > 1 → wear-out failure mode (hazard rate increases with age).
+        # eta  = design life in days (characteristic life, ~63% failure at eta).
+        # PHM multiplier elevates the hazard for stressed/spoofed satellites.
+        beta = 1.5
+        eta  = self.params.design_life_years * 365.0
 
         for i, s in enumerate(sats):
             if s.launch_countdown > 0:
-                # In-transit: just tick down, no aging
+                # In-transit: tick countdown, no aging
                 sats[i] = SkyfieldSatelliteState(
                     s.sat_name, s.satellite_obj, s.health, s.age_days,
                     s.orbital_plane, s.launch_countdown - 1, False)
@@ -373,38 +360,40 @@ class SkyfieldPhysicsEngine:
             if s.health <= 0.0:
                 continue
 
-            # 1. Calculate Weibull Failure Probability
             age_days = s.age_days
-            new_age = age_days + delta_days
+            new_age  = age_days + delta_days
 
-            if age_days == 0:
-                base_pf = 1.0 - np.exp(- (new_age / eta)**beta)
-            else:
-                base_pf = 1.0 - np.exp(- ((new_age / eta)**beta - (age_days / eta)**beta))
+            # Baseline cumulative hazard increment (Weibull)
+            H0_old = (age_days / eta) ** beta if age_days > 0 else 0.0
+            H0_new = (new_age  / eta) ** beta
+            delta_H0 = H0_new - H0_old  # baseline hazard this step
 
-            # Proportional Hazard Multiplier: Stress from attacks increases failure likelihood
+            # PHM covariate: spoofed/attacked satellites face 2.5x higher hazard
             phm_multiplier = 2.5 if s.is_spoofed else 1.0
-            exponent = - ((new_age / eta)**beta - (age_days / eta)**beta) * phm_multiplier
-            prob_failure = 1.0 - np.exp(exponent)
+            prob_failure = 1.0 - np.exp(-delta_H0 * phm_multiplier)
 
             if np.random.rand() < prob_failure:
-                new_health = 0.0  # Satellite fails due to hazard
+                # Catastrophic failure event
+                new_health    = 0.0
                 still_spoofed = False
             else:
-                # Normal operational noise
-                noise = abs(np.random.normal(0, 0.001))
-                new_health = max(s.health - noise, 0.0)
-                
-                # 2. Stronger Repair Logic (Resilience)
+                # Continuous degradation driven by instantaneous PHM hazard rate
+                # h(t) = (beta/eta) * (t/eta)^(beta-1)  [Weibull hazard rate]
+                h_rate = (beta / eta) * ((max(new_age, 1.0) / eta) ** (beta - 1.0))
+                phm_health_loss = h_rate * delta_days * phm_multiplier * 0.5
+                new_health = max(s.health - phm_health_loss, 0.0)
+
                 still_spoofed = s.is_spoofed
                 if s.is_spoofed and new_health > 0.0:
-                    new_health = min(new_health + 0.15, 1.0)
+                    # Spoofed satellites degrade faster; clear flag once health recovers
+                    new_health    = max(new_health - 0.02, 0.0)
                     still_spoofed = (new_health < 0.80)
 
             sats[i] = SkyfieldSatelliteState(
                 s.sat_name, s.satellite_obj, new_health,
-                s.age_days + delta_days, s.orbital_plane, 0, still_spoofed)
+                new_age, s.orbital_plane, 0, still_spoofed)
 
+        #Tick pending launch countdowns; deliver when they reach 0
         new_pending = []
         for cd in pending:
             ticked = cd - 1
@@ -414,12 +403,13 @@ class SkyfieldPhysicsEngine:
             else:
                 new_pending.append(ticked)
 
+        # Jammer persistence from previous step
         jammer_loc  = state.active_jammer_location
         persist_rem = max(state.jammer_persistence_steps - 1, 0)
         if persist_rem == 0:
             jammer_loc = None
 
-
+        # apply_attacks uses single roll -> at most one attack per step
         sats, new_jammer, new_persist, attack_log = \
             self._apply_attacks(sats, iteration)
         if new_jammer is not None:
@@ -434,157 +424,99 @@ class SkyfieldPhysicsEngine:
             jammer_persistence_steps=persist_rem,
             threat_phase=get_threat_phase(iteration),
             pending_launches=tuple(new_pending),
-            last_action = action)
+            was_under_attack = (len(attack_log) > 0))
 
-        kpis_after = self.compute_kpis(new_state)
-        plane_counts_after = self._compute_plane_distribution(new_state)
-        final_cov = min(kpis_after['coverage_pct'] + cov_boost, 100.0)
-        kpis_after['coverage_pct'] = final_cov
-
-        delta_cov = final_cov - kpis_before['coverage_pct']
-        delta_pdop = kpis_before['avg_pdop'] - kpis_after['avg_pdop']
-
-        imbalance_before = np.std(list(plane_counts_before.values()))
-        imbalance_after = np.std(list(plane_counts_after.values()))
-        delta_balance = imbalance_before - imbalance_after
+        kpis = self.compute_kpis(new_state)
+        final_cov = min(kpis['coverage_pct'] + cov_boost, 100.0)
+        kpis['coverage_pct'] = final_cov
 
 
-        reward = 0.0
+        reward = ACTION_COSTS.get(action, 0.0)
+        crisis_before = self.is_plane_crisis(state)
+        crisis_after = self.is_plane_crisis(new_state)
 
+        if len(attack_log) > 0:
+            reward -= 200.0   # penalty for being attacked (system stress)
 
-        reward += 6.0 * np.clip(delta_cov, -5, 5)
-        reward += 4.0 * np.clip(delta_pdop, -3, 3)
-        reward += 3.0 * np.clip(delta_balance, -3, 3)
+        # Detect recovery (coverage improvement after attack)
+        if hasattr(self, 'prev_coverage'):
+            delta_cov = final_cov - self.prev_coverage
 
-        if final_cov >= 95:
-            reward += 80
-        elif final_cov >= 90:
-            reward += 40
-        else:
-            reward -= 180
+            if len(attack_log) > 0:
+                if delta_cov > 1.0:
+                    reward += 300.0
+                elif delta_cov < -1.0:
+                    reward -= 200.0
 
-        # PDOP anchor
-        if kpis_after['avg_pdop'] < 4:
-            reward += 40
-        elif kpis_after['avg_pdop'] > 6:
-            reward -= 80
+        # store for next step
+        self.prev_coverage = final_cov
 
+        # state based rewards
+        if final_cov >= 95.0:
+            reward += 100.0
+        elif final_cov < 90.0:
+            reward -= 250.0
 
-        if kpis_before['coverage_pct'] < 90 and final_cov >= 95:
-            reward += 200   # system successfully recovered
-        if kpis_before['coverage_pct'] < 90:
-            if action == "NO_OP":
-                reward -= 50   # doing nothing during crisis is BAD
-            else:
-                reward += 50   # taking action during crisis is GOOD
-
-        if action == "RETIRE_SATELLITE":
-
-            if affected_sat is not None:
-                importance = 1 if affected_sat.health > 0.7 else 0
-                if delta_cov > 0:
-                    reward += 20 * importance 
-
-            if delta_cov < 0:
-                reward -= 20
-
-
-        elif action == "ACTIVATE_SPARE":
-
-            if affected_plane is not None:
-                before = plane_counts_before.get(affected_plane, 0)
-                after  = plane_counts_after.get(affected_plane, 0)
-
-                # must improve BOTH structure AND coverage
-                if after > before and delta_cov > 0:
-                    reward += 150
-                else:
-                    reward -= 40
-
-            if delta_cov < 0:
-                reward -= 20
-
-
-        elif action == "REBALANCE_ORBITS":
-
-            if isinstance(affected_plane, tuple):
-                strongest, weakest = affected_plane
-
-                before_gap = plane_counts_before.get(strongest, 0) - plane_counts_before.get(weakest, 0)
-                after_gap  = plane_counts_after.get(strongest, 0) - plane_counts_after.get(weakest, 0)
-
-                if after_gap < before_gap:
-                    reward += 150   # improved balance
-                else:
-                    reward -= 40
-
-            if delta_cov < 0:
-                reward -= 20
-
-
-        elif action == "LAUNCH_SATELLITE":
-
-            spare_ratio = state.spares_available / self.params.spare_capacity
-
-            # resource-aware shaping
-            if spare_ratio >= 0.9:
-                reward -= 80
-            elif spare_ratio >= 0.6:
-                reward += 20
-            elif spare_ratio >= 0.3:
-                reward += 50
-            elif spare_ratio >= 0.15:
-                reward += 80
-            else:
-                reward += 40
-
-            if len(state.pending_launches) > 3:
-                reward -= 30  
-
-            if state.spares_available < 0.2 * self.params.spare_capacity:
-                reward += 80  
-
-            # prevent misuse as immediate fix
-            if delta_cov < 0:
-                reward -= 20
-
+        if kpis['avg_pdop'] > 6.0:
+            reward -=150.0
 
         if action == "NO_OP":
-            reward -= 5
-
-            if delta_cov > 0 and delta_pdop > 0:
-                reward += 10
+            if len(attack_log) > 0 and (crisis_before or final_cov < 90.0):
+                # Penalize NO_OP only when it was the wrong call (attack + degraded state)
+                reward -= 200.0
+            elif crisis_before or final_cov < 90.0:
+                reward -= 150.0
             else:
-                reward -= 20
+                # Healthy system: NO_OP is the RIGHT call — reward conserving resources
+                reward += 20.0
 
-            if delta_cov < 0:
-                reward -= 20
-            if delta_pdop > 0:
-                reward -= 10
+        elif action == "REBALANCE_ORBITS":
+            if crisis_before and cov_boost > 0:
+                # Genuinely needed and effective
+                reward += 300.0
+            elif crisis_before and cov_boost == 0:
+                # Needed but no healthy donor found — mild penalty
+                reward -= 50.0
+            elif not crisis_before:
+                # Wasteful rebalance when no crisis — punish leakage
+                reward -= 200.0
 
+        elif action == "ACTIVATE_SPARE":
+            op_count = kpis['operational_sats']
+            if op_count < 24 or crisis_before:
+                reward += 150.0
+            elif op_count >= 28:
+                # Plenty of sats — wasteful use of spare
+                reward -= 150.0
+            else:
+                reward -= 50.0
 
-        reward -= 0.15 * action_cost
+        elif action == "LAUNCH_SATELLITE":
+            if spares < (self.params.spare_capacity // 2):
+                reward += 100.0
+            else:
+                reward -= 80.0
 
-        redundancy = kpis_after['operational_sats'] - 24
-        reward += 3 * redundancy    
+        elif action == "RETIRE_SATELLITE":
+            # Retiring a degraded satellite is good housekeeping
+            cands = [s for s in new_state.satellites
+                     if s.health == 0.0 and not s.is_spoofed]
+            if crisis_before:
+                reward -= 50.0  # Wrong priority during a crisis
+            else:
+                reward += 30.0  # Good proactive action
 
-        if delta_cov < -5:
-            reward -= 60
-        if delta_cov > 3:
-            reward += 30
-        if kpis_after['avg_pdop'] > 8:
-            reward -= 15 * max(kpis_after['avg_pdop'] - 6, 0)
-        # PREVENTIVE RESILIENCE BONUS
-        if kpis_before['coverage_pct'] > 90 and final_cov > 90:
-            if action != "NO_OP":
-                reward += 40   # proactive maintenance reward
-        if state.last_action == action and action != "NO_OP":
-            reward -= 10
-        return new_state, reward, kpis_after, len(attack_log) > 0, attack_log
+        return new_state, reward, kpis, len(attack_log) > 0, attack_log
 
 
 # ADP SOLVER
-
+ACTION_COSTS = {
+            "NO_OP": 0.0,
+            "ACTIVATE_SPARE": 5.0,
+            "LAUNCH_SATELLITE": 10.0,
+            "RETIRE_SATELLITE": 5.0,
+            "REBALANCE_ORBITS": 15.0
+        }
 class SkyfieldADPSolver:
     def __init__(self, physics: SkyfieldPhysicsEngine):
         self.physics   = physics
@@ -595,52 +527,198 @@ class SkyfieldADPSolver:
         self.post_decision_values = defaultdict(float)
         self.training_log = []
         self.episode_log = []
+        
 
-    def get_macro_state(self, state, kpis_after) -> tuple:
-        oc   = state.get_operational_count()
-        sp   = min(state.spares_available, self.physics.params.spare_capacity)
-        avg_health = round(state.get_avg_health(), 2)
+    def get_macro_state(self, state, kpis):
+        plane_counts = [0] * 6
 
-        low_health_ratio = sum(1 for s in state.satellites if 0.0 < s.health < 0.4) / len(state.satellites)
-        dead_ratio = sum(1 for s in state.satellites if s.health <= 0.0) / len(state.satellites)    
-        cov  = (0 if kpis_after['coverage_pct'] < 80
-                else 1 if kpis_after['coverage_pct'] < 95 else 2)
-        jam  = 1 if state.active_jammer_location else 0
-        pdop = (0 if kpis_after['avg_pdop'] < 3
-                else 1 if kpis_after['avg_pdop'] < 6 else 2)
-        ph   = {"LOW":0,"MEDIUM":1,"HIGH":2}.get(state.threat_phase, 0)
-        pend = min(len(state.pending_launches), 2)
-
-        planes = defaultdict(list)
         for s in state.satellites:
-            planes[s.orbital_plane].append(s.health)
+            if s.health > 0.5 and s.launch_countdown == 0:
+                plane_counts[s.orbital_plane] += 1
 
-        plane_crisis = 1 if any(sum(1 for hp in h_list if hp > 0.5) < 3 for h_list in planes.values()) else 0
-        return (oc, sp, avg_health, round(low_health_ratio,2), round(dead_ratio,2),
-        cov, jam, pdop, ph, pend, plane_crisis)
+        n_crisis = min(
+            sum(1 for c in plane_counts if c < 3),
+            3
+        )
 
-    def get_post_decision_state(self, macro, action) -> tuple:
-        oc, sp, avg_health, low_health_ratio, dead_ratio, cov, jam, pdop, ph, pend, plane_crisis = macro
-        if   action == "ACTIVATE_SPARE"   and sp > 0:
-            return (oc+1, sp-1, avg_health, low_health_ratio, dead_ratio, cov, jam, pdop, ph, pend, plane_crisis, "ACT")
+        worst_plane = min(min(plane_counts), 3)
+
+        dead = sum(1 for s in state.satellites if s.health <= 0.0)
+
+        if dead == 0:
+            dead_bucket = 0
+        elif dead <= 2:
+            dead_bucket = 1
+        elif dead <= 5:
+            dead_bucket = 2
+        else:
+            dead_bucket = 3
+
+        sp = state.spares_available
+
+        if sp == 0:
+            spare_bucket = 0
+        elif sp <= 2:
+            spare_bucket = 1
+        elif sp <= 5:
+            spare_bucket = 2
+        else:
+            spare_bucket = 3
+
+
+        pending = len(state.pending_launches)
+
+        if pending == 0:
+            pending_bucket = 0
+        elif pending == 1:
+            pending_bucket = 1
+        else:
+            pending_bucket = 2
+
+
+        phase_map = {
+            "LOW": 0,
+            "MEDIUM": 1,
+            "HIGH": 2
+        }
+
+        threat_phase = phase_map[state.threat_phase]
+
+        jammer_active = 1 if state.active_jammer_location else 0
+
+        cov = kpis['coverage_pct']
+
+        if cov < 85:
+            coverage_bucket = 0
+        elif cov < 90:
+            coverage_bucket = 1
+        elif cov < 95:
+            coverage_bucket = 2
+        elif cov < 99:
+            coverage_bucket = 3
+        else:
+            coverage_bucket = 4
+
+        return (
+            n_crisis,
+            worst_plane,
+            dead_bucket,
+            spare_bucket,
+            pending_bucket,
+            threat_phase,
+            jammer_active,
+            coverage_bucket
+        )
+
+    def get_post_decision_state(self, macro, action):
+
+        (
+            n_crisis,
+            worst_plane,
+            dead_bucket,
+            spare_bucket,
+            pending_bucket,
+            threat_phase,
+            jammer_active,
+            coverage_bucket
+        ) = macro
+
+        if action == "ACTIVATE_SPARE":
+
+            new_worst = min(worst_plane + 1, 3)
+
+            new_spares = max(spare_bucket - 1, 0)
+
+            new_dead = max(dead_bucket - 1, 0)
+
+            new_crisis = n_crisis
+            if worst_plane == 2 and n_crisis > 0:
+                new_crisis = max(n_crisis - 1, 0)
+
+            return (
+                new_crisis,
+                new_worst,
+                new_dead,
+                new_spares,
+                pending_bucket,
+                threat_phase,
+                jammer_active,
+                coverage_bucket
+            )
+
         elif action == "LAUNCH_SATELLITE":
-            return (oc, sp, avg_health, low_health_ratio, dead_ratio, cov, jam, pdop, ph, min(pend+1,2), plane_crisis, "LCH")
+
+            new_pending = min(pending_bucket + 1, 2)
+
+            return (
+                n_crisis,
+                worst_plane,
+                dead_bucket,
+                spare_bucket,
+                new_pending,
+                threat_phase,
+                jammer_active,
+                coverage_bucket
+            )
+
+
         elif action == "RETIRE_SATELLITE":
-            return (max(oc-1,0), sp, avg_health, low_health_ratio, dead_ratio, cov, jam, pdop, ph, pend, plane_crisis, "RET")
+
+            new_dead = min(dead_bucket + 1, 3)
+
+            return (
+                n_crisis,
+                worst_plane,
+                new_dead,
+                spare_bucket,
+                pending_bucket,
+                threat_phase,
+                jammer_active,
+                coverage_bucket
+            )
+
         elif action == "REBALANCE_ORBITS":
-            return (oc, sp, avg_health, low_health_ratio, dead_ratio, min(cov+1,2), jam, pdop, ph, pend, 0, "RBL")
-        return (oc, sp, avg_health, low_health_ratio, dead_ratio, cov, jam, pdop, ph, pend, plane_crisis, "NOP")
+
+            new_worst = min(worst_plane + 1, 3)
+
+            new_crisis = max(n_crisis - 1, 0)
+
+            return (
+                new_crisis,
+                new_worst,
+                dead_bucket,
+                spare_bucket,
+                pending_bucket,
+                threat_phase,
+                jammer_active,
+                coverage_bucket
+            )
+
+        return macro
+        
+    def immediate_reward ( self , state , action ) :
+        return ACTION_COSTS.get( action , 0.0)
 
     def greedy_action(self, macro, state) -> str:
         valid = self.physics.get_valid_actions(state)
         best_act, best_val = "NO_OP", -float('inf')
         for act in valid:
-            v = self.post_decision_values[self.get_post_decision_state(macro, act)]
+            pds = self.get_post_decision_state(macro, act)
+            # Optimistic initialization: unvisited states get a small positive prior
+            # so that under-explored actions are not dismissed in early training
+            if pds in self.post_decision_values:
+                v_post = self . post_decision_values . get ( self . get_post_decision_state (
+                    macro , act ) , 0.0)
+                v = self . immediate_reward ( state , act ) + self . gamma * v_post
+
+            else:
+                # Optimistic prior: slightly above 0 to encourage exploration
+                v = 10.0
             if v > best_val:
                 best_val, best_act = v, act
         return best_act
 
-    def run_adp_training(self, initial_state, episodes=500, steps_per_episode=150, output_dir="."):
+    def run_adp_training(self, initial_state, episodes=1, steps_per_episode=10, output_dir="."):
         print("\n" + "="*70)
         print("  ADP RESILIENCE FRAMEWORK - GPS CONSTELLATION")
         print("  EPISODIC TRAINING ENABLED (Pure State-Driven Reward)")
@@ -665,17 +743,19 @@ class SkyfieldADPSolver:
 
 
             for ep in range(1, episodes + 1):
+                visited_states = set()
                 state = initial_state
                 kpis = base_kpis
                 trajectory = []
                 episode_reward = 0.0
+                self.physics.prev_coverage = base_kpis['coverage_pct']
 
                 ep_coverage = []
                 ep_pdops = []
                 ep_cn0s = []
                 
-                decay_at_step = 0.01
-                eps = max(0.05, 0.40 * np.exp(-decay_at_step * ep))
+                decay_at_step = 0.003
+                eps = max(0.1, 0.5 * np.exp(-decay_at_step * ep))
 
                 self.training_log = []
 
@@ -683,8 +763,10 @@ class SkyfieldADPSolver:
                 print(f"  > STARTING EPISODE {ep}/{episodes} (Epsilon: {eps:.2f})")
                 print(f"{'-'*70}")
 
+                
                 for step in range(1, steps_per_episode + 1):
                     macro = self.get_macro_state(state, kpis)
+                    visited_states.add(macro)   
                     
                     if np.random.rand() < eps:
                         action = np.random.choice(self.physics.get_valid_actions(state))
@@ -697,7 +779,7 @@ class SkyfieldADPSolver:
                         self.physics.step_physics(state, action, iteration=step, delta_days=7.0)
 
                     next_macro = self.get_macro_state(next_state, next_kpis)
-                    trajectory.append((macro, action, pds, reward, next_macro))
+                    trajectory.append((macro, action, pds, reward, next_macro, next_state))
                     
                     episode_reward += reward
 
@@ -745,21 +827,23 @@ class SkyfieldADPSolver:
                     state = next_state
                     kpis = next_kpis
 
-                    if kpis['coverage_pct'] < 50.0:
+                    if kpis['coverage_pct'] < 30.0:
                         print(f"  [CRITICAL FAILURE] Constellation collapsed at step {step}. Resetting episode.")
-                        break
+                        reward -= 300.0  # Large penalty for catastrophic failure
 
                 for t in range(len(trajectory)-1, -1, -1):
-                    _, _, pds, r, nm = trajectory[t]
+                    _, _, pds, r, nm, ns = trajectory[t]
+                    valid_next = self.physics.get_valid_actions(ns)
+                    # Use optimistic prior for unvisited states (consistent with greedy_action)
                     future = max(
-                        self.post_decision_values[self.get_post_decision_state(nm, a)]
-                        for a in self.actions)
+                        self.post_decision_values.get(self.get_post_decision_state(nm, a), 0.0)
+                        for a in valid_next)
                     target = r + self.gamma * future
                     old_v  = self.post_decision_values[pds]
-                    
                     self.post_decision_values[pds] = (1 - self.alpha) * old_v + self.alpha * target
                 
                 print(f"  [EPISODE {ep} SUMMARY] Total Reward: {episode_reward:.1f} | Final Cov: {kpis['coverage_pct']:.1f}%")
+                print(f"  Unique macro states visited: {len(visited_states)}")
 
                 self.episode_log.append({
                     'episode': ep,
@@ -770,6 +854,7 @@ class SkyfieldADPSolver:
                     'avg_cn0': np.mean(ep_cn0s),
                     'survival_steps': step,
                     'final_spares': next_state.spares_available})
+                
 
         print(f"\n  [LOG] CSV -> {csv_path}")
 
@@ -809,7 +894,7 @@ class SkyfieldADPSolver:
             ax.grid(True, alpha=0.3)
             ax.set_xlim([1, max(eps)])
 
-        # Total Reward (The Learning Curve) 
+        # ---- Plot 1: Total Reward (The Learning Curve) ----
         ax = axes[0]; setup_ax(ax)
         roll_r = pd.Series(rewards).rolling(window=10, min_periods=1).mean() # 10-episode rolling average
         ax.plot(eps, rewards, color='#2ecc71', lw=1.0, alpha=0.6, label='Total Episode Reward')
@@ -819,7 +904,7 @@ class SkyfieldADPSolver:
         ax.set_title('Learning Curve: Total Reward per Episode', fontsize=12, fontweight='bold')
         ax.legend(loc='upper left')
 
-        # Coverage 
+        # ---- Plot 2: Coverage ----
         ax = axes[1]; setup_ax(ax)
         ax.plot(eps, avg_cov, color='#3498db', lw=2.0, label='Average Episode Coverage')
         ax.plot(eps, min_cov, color='#e74c3c', lw=1.5, ls='--', label='Minimum Coverage (Worst Drop)')
@@ -829,7 +914,7 @@ class SkyfieldADPSolver:
         ax.set_title('Constellation Coverage Robustness Over Training', fontsize=12, fontweight='bold')
         ax.legend(loc='lower right')
 
-        # Plot 3: Survival & Completion
+        # ---- Plot 3: Survival & Completion ----
         ax = axes[2]; setup_ax(ax)
         ax.plot(eps, survival, color='#9b59b6', lw=2.0, label='Steps Survived (Max 500)')
         ax.axhline(150, color='purple', ls=':', lw=1.5, label='Full Episode Completion')
@@ -856,7 +941,7 @@ class SkyfieldADPSolver:
 
         plt.tight_layout(rect=[0,0,1,0.975])
         out = os.path.join(output_dir, "learning_progress_plots.png")
-        plt.savefig(out, dpi=150, bbox_inches='tight')
+        #plt.savefig(out, dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  [PLOT] Saved -> {out}")
 
@@ -870,17 +955,11 @@ if __name__ == "__main__":
     print(f"Loaded {len(initial_state.satellites)} GPS satellites.\n")
 
     adp = SkyfieldADPSolver(physics)
-    adp.run_adp_training(initial_state, episodes=500, steps_per_episode=150, output_dir=OUTPUT_DIR)
-
-    import pickle
-
-    policy_path = os.path.join(OUTPUT_DIR, "ADP_policy_3.pkl")
-    with open(policy_path, 'wb') as f:
-        pickle.dump(adp.post_decision_values, f)
+    adp.run_adp_training(initial_state, episodes=1, steps_per_episode=10, output_dir=OUTPUT_DIR)
 
     print("\n" + "="*70)
     print("  RESILIENCE FRAMEWORK - COMPLETE")
     print(f"  Outputs saved to: {OUTPUT_DIR}/")
     print(f"    * resilience_log.csv   - Per-episode KPI log")
     print(f"    * resilience_plots.png - 5-panel resilience figure")
-    print("="*70)   
+    print("="*70)
