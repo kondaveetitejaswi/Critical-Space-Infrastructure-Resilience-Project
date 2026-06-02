@@ -431,80 +431,33 @@ class SkyfieldPhysicsEngine:
         kpis['coverage_pct'] = final_cov
 
 
-        reward = ACTION_COSTS.get(action, 0.0)
-        crisis_before = self.is_plane_crisis(state)
-        crisis_after = self.is_plane_crisis(new_state)
+        reward = -ACTION_COSTS.get(action, 0.0)
+        delta_cov = ( kpis['coverage_pct'] - self.prev_kpis['coverage_pct'] ) 
+        delta_pdop = ( kpis['avg_pdop'] - self.prev_kpis['avg_pdop'] )
+        prev_plane_counts = defaultdict(int)
+        curr_plane_counts = defaultdict(int)
 
-        if len(attack_log) > 0:
-            reward -= 200.0   # penalty for being attacked (system stress)
+        for s in state.satellites:
+            if s.health > 0.5 and s.launch_countdown == 0:
 
-        # Detect recovery (coverage improvement after attack)
-        if hasattr(self, 'prev_coverage'):
-            delta_cov = final_cov - self.prev_coverage
+                prev_plane_counts[s.orbital_plane] += 1
+        for s in new_state.satellites:
+            if s.health > 0.5 and s.launch_countdown == 0:
+                curr_plane_counts[s.orbital_plane] += 1
+        
+        prev_worst_plane = min(prev_plane_counts.values()) if prev_plane_counts else 0
+        curr_worst_plane = min(curr_plane_counts.values()) if curr_plane_counts else 0
+        del_balance = (curr_worst_plane - prev_worst_plane)
 
-            if len(attack_log) > 0:
-                if delta_cov > 1.0:
-                    reward += 300.0
-                elif delta_cov < -1.0:
-                    reward -= 200.0
+        w_cov = 5
+        w_pdop = 2
+        w_bal = 10
 
-        # store for next step
-        self.prev_coverage = final_cov
+        reward += (w_cov * delta_cov
+        + w_pdop * (-delta_pdop)
+        + w_bal * del_balance)
 
-        # state based rewards
-        if final_cov >= 95.0:
-            reward += 100.0
-        elif final_cov < 90.0:
-            reward -= 250.0
-
-        if kpis['avg_pdop'] > 6.0:
-            reward -=150.0
-
-        if action == "NO_OP":
-            if len(attack_log) > 0 and (crisis_before or final_cov < 90.0):
-                # Penalize NO_OP only when it was the wrong call (attack + degraded state)
-                reward -= 200.0
-            elif crisis_before or final_cov < 90.0:
-                reward -= 150.0
-            else:
-                # Healthy system: NO_OP is the RIGHT call — reward conserving resources
-                reward += 20.0
-
-        elif action == "REBALANCE_ORBITS":
-            if crisis_before and cov_boost > 0:
-                # Genuinely needed and effective
-                reward += 300.0
-            elif crisis_before and cov_boost == 0:
-                # Needed but no healthy donor found — mild penalty
-                reward -= 50.0
-            elif not crisis_before:
-                # Wasteful rebalance when no crisis — punish leakage
-                reward -= 200.0
-
-        elif action == "ACTIVATE_SPARE":
-            op_count = kpis['operational_sats']
-            if op_count < 24 or crisis_before:
-                reward += 150.0
-            elif op_count >= 28:
-                # Plenty of sats — wasteful use of spare
-                reward -= 150.0
-            else:
-                reward -= 50.0
-
-        elif action == "LAUNCH_SATELLITE":
-            if spares < (self.params.spare_capacity // 2):
-                reward += 100.0
-            else:
-                reward -= 80.0
-
-        elif action == "RETIRE_SATELLITE":
-            # Retiring a degraded satellite is good housekeeping
-            cands = [s for s in new_state.satellites
-                     if s.health == 0.0 and not s.is_spoofed]
-            if crisis_before:
-                reward -= 50.0  # Wrong priority during a crisis
-            else:
-                reward += 30.0  # Good proactive action
+        self.prev_kpis = kpis.copy()
 
         return new_state, reward, kpis, len(attack_log) > 0, attack_log
 
@@ -697,7 +650,7 @@ class SkyfieldADPSolver:
         return macro
         
     def immediate_reward ( self , state , action ) :
-        return ACTION_COSTS.get( action , 0.0)
+        return -ACTION_COSTS.get( action , 0.0)
 
     def greedy_action(self, macro, state) -> str:
         valid = self.physics.get_valid_actions(state)
@@ -713,12 +666,12 @@ class SkyfieldADPSolver:
 
             else:
                 # Optimistic prior: slightly above 0 to encourage exploration
-                v = 10.0
+                v = 0.0
             if v > best_val:
                 best_val, best_act = v, act
         return best_act
 
-    def run_adp_training(self, initial_state, episodes=1, steps_per_episode=10, output_dir="."):
+    def run_adp_training(self, initial_state, episodes=100, steps_per_episode=150, output_dir="."):
         print("\n" + "="*70)
         print("  ADP RESILIENCE FRAMEWORK - GPS CONSTELLATION")
         print("  EPISODIC TRAINING ENABLED (Pure State-Driven Reward)")
@@ -741,14 +694,14 @@ class SkyfieldADPSolver:
                          'operational_sats', 'spares', 'pending_launches',
                          'step_reward', 'under_attack', 'attack_description'])
 
-
+            all_visited = set()
             for ep in range(1, episodes + 1):
                 visited_states = set()
                 state = initial_state
                 kpis = base_kpis
                 trajectory = []
                 episode_reward = 0.0
-                self.physics.prev_coverage = base_kpis['coverage_pct']
+                self.physics.prev_kpis = kpis.copy()  
 
                 ep_coverage = []
                 ep_pdops = []
@@ -762,11 +715,13 @@ class SkyfieldADPSolver:
                 print(f"\n{'-'*70}")
                 print(f"  > STARTING EPISODE {ep}/{episodes} (Epsilon: {eps:.2f})")
                 print(f"{'-'*70}")
+                if ep % 20 == 0:     print(f"  [DIAGNOSTIC] After episode {ep}: {len(all_visited)} cumulative unique states")
 
                 
                 for step in range(1, steps_per_episode + 1):
                     macro = self.get_macro_state(state, kpis)
                     visited_states.add(macro)   
+                    all_visited.add(macro)
                     
                     if np.random.rand() < eps:
                         action = np.random.choice(self.physics.get_valid_actions(state))
@@ -844,6 +799,7 @@ class SkyfieldADPSolver:
                 
                 print(f"  [EPISODE {ep} SUMMARY] Total Reward: {episode_reward:.1f} | Final Cov: {kpis['coverage_pct']:.1f}%")
                 print(f"  Unique macro states visited: {len(visited_states)}")
+                
 
                 self.episode_log.append({
                     'episode': ep,
@@ -857,6 +813,7 @@ class SkyfieldADPSolver:
                 
 
         print(f"\n  [LOG] CSV -> {csv_path}")
+        print(f"  Cumulative unique macro states: {len(all_visited)}")
 
         print("\n" + "="*70)
         print("  TOP 10 LEARNED POST-DECISION STATE VALUES")
@@ -941,7 +898,8 @@ class SkyfieldADPSolver:
 
         plt.tight_layout(rect=[0,0,1,0.975])
         out = os.path.join(output_dir, "learning_progress_plots.png")
-        #plt.savefig(out, dpi=150, bbox_inches='tight')
+        plt.savefig(out, dpi=150, bbox_inches='tight')
+        plt.show()
         plt.close()
         print(f"  [PLOT] Saved -> {out}")
 
@@ -955,7 +913,7 @@ if __name__ == "__main__":
     print(f"Loaded {len(initial_state.satellites)} GPS satellites.\n")
 
     adp = SkyfieldADPSolver(physics)
-    adp.run_adp_training(initial_state, episodes=1, steps_per_episode=10, output_dir=OUTPUT_DIR)
+    adp.run_adp_training(initial_state, episodes=100, steps_per_episode=150, output_dir=OUTPUT_DIR)
 
     print("\n" + "="*70)
     print("  RESILIENCE FRAMEWORK - COMPLETE")
