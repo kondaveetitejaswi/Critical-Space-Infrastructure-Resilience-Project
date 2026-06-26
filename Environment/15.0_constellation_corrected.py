@@ -1,5 +1,6 @@
 # the version with epsilon decay with exponential degradation
 import numpy as np
+np.random.seed(42)
 from dataclasses import dataclass
 from typing import Tuple, Dict, List, Optional
 from collections import defaultdict
@@ -21,6 +22,7 @@ class ConstellationParameters:
     spare_capacity: int = 8
     design_life_years: float = 12.0
     launch_delay_steps: int = 7
+    receiver_bandwidth_hz : float = 2.0e6
 
 GPS_PARAMS = ConstellationParameters(
     name="GPS",
@@ -71,9 +73,11 @@ class SkyfieldPhysicsEngine:
     def __init__(self, params: ConstellationParameters):
         self.params = params
         self.ts = load.timescale()
-        self.lat_grid  = np.arange(-90,  91, 30)
-        self.lon_grid  = np.arange(-180, 180, 30)
+        self.lat_grid  = np.arange(-90,  91, 5)
+        self.lon_grid  = np.arange(-180, 180, 5)
         self.grid_cells = [(la, lo) for la in self.lat_grid for lo in self.lon_grid]
+        self.grid_weights = np.array([np.cos(np.radians(la)) for la, _ in self.grid_cells])
+        self.total_weight = self.grid_weights.sum()
 
     def download_initial_state(self) -> SkyfieldConstellationState:
         sats_data = load.tle_file(self.params.celestrak_url)
@@ -91,7 +95,7 @@ class SkyfieldPhysicsEngine:
             spares_available=self.params.spare_capacity)
 
     def compute_kpis(self, state: SkyfieldConstellationState) -> Dict:
-        adequate, good = 0, 0
+        adequate_w, good_w = 0, 0
         total = len(self.grid_cells)
         pdop_list, cn0_list = [], []
         t = state.current_time
@@ -103,7 +107,7 @@ class SkyfieldPhysicsEngine:
                       if state.active_jammer_location else (None, None))
         jammer_power_w = 50000.0
 
-        for lat, lon in self.grid_cells:
+        for k, (lat, lon) in enumerate(self.grid_cells):
             gs = wgs84.latlon(lat, lon)
             H, cn0_cell = [], []
 
@@ -126,31 +130,34 @@ class SkyfieldPhysicsEngine:
                     C    = 26.8 - Ls
                     kT   = -204.0
                     if J_dbw > -999:
-                        noise = 10*np.log10(10**(kT/10)+10**(J_dbw/10))
+                        B = self.params.receiver_bandwidth_hz
+                        J0_dbw_hz = J_dbw - 10*np.log10(B)
+                        noise = 10*np.log10(10**(kT/10)+10**(J0_dbw_hz/10))
                         cn0_cell.append(C - noise)
                     else:
                         cn0_cell.append(C - kT)
 
             nv = len(H)
-            pdop = 99.9
             if nv >= self.params.min_satellites_for_fix:
                 try:
                     Hm = np.array(H)
                     Q  = np.linalg.inv(Hm.T @ Hm)
-                    pdop = np.sqrt(Q[0,0]+Q[1,1]+Q[2,2])
+                    pdop = np.sqrt(Q[0,0] + Q[1,1] + Q[2,2])
+
+                    pdop_list.append(pdop)
+
+                    adequate_w += self.grid_weights[k]
+                    if pdop < 6.0:
+                        good_w += self.grid_weights[k]
+
                 except np.linalg.LinAlgError:
                     pass
-                adequate += 1
-                if pdop < 6.0:
-                    good += 1
-
-            pdop_list.append(pdop)
             cn0_list.extend(cn0_cell)
 
         return {
-            'coverage_pct':      (adequate/total)*100.0,
-            'good_coverage_pct': (good/total)*100.0,
-            'avg_pdop':          float(np.mean(pdop_list)),
+            'coverage_pct':      (adequate_w/self.total_weight)*100.0,
+            'good_coverage_pct': (good_w/self.total_weight)*100.0,
+            'avg_pdop':          float(np.mean(pdop_list)) if pdop_list else 99.9,
             'avg_cn0_dbhz':      float(np.mean(cn0_list)) if cn0_list else 0.0,
             'operational_sats':  len(active)
         }
@@ -174,11 +181,6 @@ class SkyfieldPhysicsEngine:
         if retireable:
             valid.append("RETIRE_SATELLITE")
 
-        # REBALANCE_ORBITS only if there is a healthy donor AND a plane crisis exists
-        healthy_donors = any(s.health > 0.8 and s.launch_countdown == 0
-                             for s in state.satellites)
-        if healthy_donors and self.is_plane_crisis(state):
-            valid.append("REBALANCE_ORBITS")
 
         return valid
 
@@ -186,7 +188,6 @@ class SkyfieldPhysicsEngine:
         sats    = list(state.satellites)
         spares  = state.spares_available
         pending = list(state.pending_launches)
-        cov_boost = 0.0
 
         if action == "RETIRE_SATELLITE":
             cands = [i for i,s in enumerate(sats)
@@ -214,35 +215,8 @@ class SkyfieldPhysicsEngine:
             print(f"  [ACTION] LAUNCH -> In-transit ({self.params.launch_delay_steps} steps) | "
                   f"In-flight: {len(pending)}")
 
-        elif action == "REBALANCE_ORBITS":
-            healthy = [i for i,s in enumerate(sats)
-                       if s.health > 0.8 and s.launch_countdown == 0]
-            # Count how many planes are in crisis BEFORE rebalance
-            planes_before = defaultdict(list)
-            for s in sats:
-                planes_before[s.orbital_plane].append(s.health)
-            n_crisis_planes = sum(
-                1 for hl in planes_before.values()
-                if sum(1 for h in hl if h > 0.5) < 3)
-
-            if healthy and n_crisis_planes > 0:
-                idx = healthy[0]; s = sats[idx]
-                sats[idx] = SkyfieldSatelliteState(
-                    s.sat_name, s.satellite_obj, s.health - 0.25, s.age_days,
-                    s.orbital_plane, 0, False)
-                # cov_boost only when it genuinely resolves a plane crisis
-                cov_boost = 4.0
-                print(f"  [ACTION] REBALANCE -> Donor {s.sat_name} | Crisis planes resolved: {n_crisis_planes}")
-            elif healthy:
-                # No crisis: rebalance is wasteful — apply cost but no boost
-                idx = healthy[0]; s = sats[idx]
-                sats[idx] = SkyfieldSatelliteState(
-                    s.sat_name, s.satellite_obj, s.health - 0.25, s.age_days,
-                    s.orbital_plane, 0, False)
-                cov_boost = 0.0
-                print(f"  [ACTION] REBALANCE (no crisis) -> Donor {s.sat_name} | No boost applied")
-
-        return sats, spares, cov_boost, tuple(pending)
+        
+        return sats, spares, tuple(pending)
 
 
     def _apply_attacks(self, sats, iteration):
@@ -336,7 +310,7 @@ class SkyfieldPhysicsEngine:
         return False
 
     def step_physics(self, state, action, iteration=1, delta_days=7.0):
-        sats, spares, cov_boost, pending = \
+        sats, spares, pending = \
             self.apply_action(state, action)
 
         new_time = self.ts.tt_jd(state.current_time.tt + delta_days)
@@ -427,7 +401,7 @@ class SkyfieldPhysicsEngine:
             was_under_attack = (len(attack_log) > 0))
 
         kpis = self.compute_kpis(new_state)
-        final_cov = min(kpis['coverage_pct'] + cov_boost, 100.0)
+        final_cov = min(kpis['coverage_pct'], 100.0)
         kpis['coverage_pct'] = final_cov
 
 
@@ -457,6 +431,9 @@ class SkyfieldPhysicsEngine:
         + w_pdop * (-delta_pdop)
         + w_bal * del_balance)
 
+        if (new_state.spares_available == 0 and len(new_state.pending_launches) == 0):
+            reward -= 5.0
+
         self.prev_kpis = kpis.copy()
 
         return new_state, reward, kpis, len(attack_log) > 0, attack_log
@@ -467,14 +444,13 @@ ACTION_COSTS = {
             "NO_OP": 0.0,
             "ACTIVATE_SPARE": 5.0,
             "LAUNCH_SATELLITE": 10.0,
-            "RETIRE_SATELLITE": 5.0,
-            "REBALANCE_ORBITS": 15.0
+            "RETIRE_SATELLITE": 5.0
         }
 class SkyfieldADPSolver:
     def __init__(self, physics: SkyfieldPhysicsEngine):
         self.physics   = physics
         self.actions   = ["NO_OP","ACTIVATE_SPARE","LAUNCH_SATELLITE",
-                          "RETIRE_SATELLITE","REBALANCE_ORBITS"]
+                          "RETIRE_SATELLITE"]
         self.gamma     = 0.95
         self.alpha     = 0.1
         self.post_decision_values = defaultdict(float)
@@ -630,12 +606,63 @@ class SkyfieldADPSolver:
                 coverage_bucket
             )
 
-        elif action == "REBALANCE_ORBITS":
+        return macro
+        
+    def immediate_reward(self, state, action):
+        return -ACTION_COSTS.get(action, 0.0)
 
-            new_worst = min(worst_plane + 1, 3)
+    def greedy_action(self, macro, state) -> str:
+        valid = self.physics.get_valid_actions(state)
+        best_act, best_val = "NO_OP", -float('inf')
+        for act in valid:
+            pds = self.get_post_decision_state(macro, act)
+            # Optimistic initialization: unvisited states get a small positive prior
+            # so that under-explored actions are not dismissed in early training
+            if pds in self.post_decision_values:
+                v_post = self.post_decision_values.get(pds, 0.0)
+                v = self.immediate_reward(state, act) + self.gamma * v_post
+            else:
+                # Optimistic prior: slightly above 0 to encourage exploration
+                v = 0.0
+            if v > best_val:
+                best_val, best_act = v, act
+        return best_act
 
-            new_crisis = max(n_crisis - 1, 0)
+    def run_adp_training(self, initial_state, episodes=10, steps_per_episode=150, output_dir="."):
+        print("\n" + "="*70)
+        print("  ADP RESILIENCE FRAMEWORK - GPS CONSTELLATION")
+        print("  EPISODIC TRAINING ENABLED (Pure State-Driven Reward)")
+        print("="*70)
 
+        base_kpis = self.physics.compute_kpis(initial_state)
+        print(f"\nBaseline -> Cov: {base_kpis['coverage_pct']:.1f}% | "
+              f"PDOP: {base_kpis['avg_pdop']:.2f} | "
+              f"C/N0: {base_kpis['avg_cn0_dbhz']:.1f} dB-Hz | "
+              f"Op.Sats: {base_kpis['operational_sats']}\n")
+
+        os.makedirs(output_dir, exist_ok=True)
+        csv_path = os.path.join(output_dir, "resilience_log.csv")
+
+        with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
+            cw = csv.writer(f)
+            cw.writerow(['episode', 'step', 'phase', 'action',
+                         'coverage_pct', 'good_coverage_pct',
+                         'avg_pdop', 'avg_cn0_dbhz',
+                         'operational_sats', 'spares', 'pending_launches',
+                         'step_reward', 'under_attack', 'attack_description'])
+
+            all_visited = set()
+            for ep in range(1, episodes + 1):
+                visited_states = set()
+                state = initial_state
+                kpis = base_kpis
+                trajectory = []
+                episode_reward = 0.0
+                self.physics.prev_kpis = kpis.copy()
+                self.low_cov_streak = 0
+
+                ep_coverage = []
+                ep_pdops = []
             return (
                 new_crisis,
                 new_worst,
@@ -702,6 +729,7 @@ class SkyfieldADPSolver:
                 trajectory = []
                 episode_reward = 0.0
                 self.physics.prev_kpis = kpis.copy()  
+                self.low_cov_streak = 0
 
                 ep_coverage = []
                 ep_pdops = []
@@ -781,6 +809,14 @@ class SkyfieldADPSolver:
                     # Advance state
                     state = next_state
                     kpis = next_kpis
+                    if kpis['coverage_pct'] < 90.0:
+                        self.low_cov_streak += 1
+                    else:
+                        self.low_cov_streak = 0
+
+                    if self.low_cov_streak >= 5:
+                        print(f"  [FAILURE] Coverage < 90% for 5 consecutive steps at step {step}.")
+                        break
 
                     if kpis['coverage_pct'] < 30.0:
                         print(f"  [CRITICAL FAILURE] Constellation collapsed at step {step}. Resetting episode.")
@@ -903,21 +939,68 @@ class SkyfieldADPSolver:
         plt.close()
         print(f"  [PLOT] Saved -> {out}")
 
+
 if __name__ == "__main__":
-    OUTPUT_DIR = "resilience_output"
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    physics = SkyfieldPhysicsEngine(GPS_PARAMS)
-    print("Downloading live TLE ephemeris data from CelesTrak...")
-    initial_state = physics.download_initial_state()
-    print(f"Loaded {len(initial_state.satellites)} GPS satellites.\n")
+    SEEDS = [42, 7, 123, 2024]
 
-    adp = SkyfieldADPSolver(physics)
-    adp.run_adp_training(initial_state, episodes=100, steps_per_episode=150, output_dir=OUTPUT_DIR)
+    all_final_coverages = []
+    all_final_rewards = []
+
+    for seed in SEEDS:
+
+        print("\n" + "="*70)
+        print(f"RUNNING EXPERIMENT WITH SEED = {seed}")
+        print("="*70)
+
+        # Fix seed for reproducibility
+        np.random.seed(seed)
+
+        OUTPUT_DIR = f"resilience_output_seed_{seed}"
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+        physics = SkyfieldPhysicsEngine(GPS_PARAMS)
+
+        print("Downloading live TLE ephemeris data from CelesTrak...")
+        initial_state = physics.download_initial_state()
+
+        print(f"Loaded {len(initial_state.satellites)} GPS satellites.\n")
+
+        adp = SkyfieldADPSolver(physics)
+
+        adp.run_adp_training(
+            initial_state,
+            episodes=10,
+            steps_per_episode=150,
+            output_dir=OUTPUT_DIR
+        )
+
+        # Store final metrics
+        final_episode = adp.episode_log[-1]
+
+        all_final_coverages.append(final_episode['avg_coverage'])
+        all_final_rewards.append(final_episode['total_reward'])
+
+    # REPORT
+
+
+    cov_median = np.median(all_final_coverages)
+    cov_q1 = np.percentile(all_final_coverages, 25)
+    cov_q3 = np.percentile(all_final_coverages, 75)
+
+    rew_median = np.median(all_final_rewards)
+    rew_q1 = np.percentile(all_final_rewards, 25)
+    rew_q3 = np.percentile(all_final_rewards, 75)
 
     print("\n" + "="*70)
-    print("  RESILIENCE FRAMEWORK - COMPLETE")
-    print(f"  Outputs saved to: {OUTPUT_DIR}/")
-    print(f"    * resilience_log.csv   - Per-episode KPI log")
-    print(f"    * resilience_plots.png - 5-panel resilience figure")
+    print("FINAL MULTI-SEED RESULTS")
     print("="*70)
+
+    print(f"Coverage Median: {cov_median:.2f}%")
+    print(f"Coverage IQR: [{cov_q1:.2f}, {cov_q3:.2f}]")
+
+    print()
+
+    print(f"Reward Median: {rew_median:.2f}")
+    print(f"Reward IQR: [{rew_q1:.2f}, {rew_q3:.2f}]")
+
